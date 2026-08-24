@@ -9,28 +9,35 @@ import java.io.InputStream
 import java.io.SequenceInputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.Proxy
 import java.net.Socket
-import javax.net.SocketFactory
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SNIServerName
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 object PayloadInjector {
 
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val RESPONSE_TIMEOUT_MS = 15_000
 
-    // Пауза ожидания ответа сервера на промежуточную часть payload ([split]):
-    // если за это время ответа нет — считаем, что сервер молчит, и шлём следующую часть.
-    private const val SPLIT_IDLE_TIMEOUT_MS = 1_500
-    private const val SPLIT_MAX_WAIT_MS = 8_000
-
-    // Служебные маркеры сегментов (в сокет не пишутся).
-    private const val TOK_WAIT_RESPONSE = "\u0000WAITRESP\u0000"
+    // Служебный маркер задержки между сегментами (в сокет не пишется).
     private val DEFAULT_UA: String get() = GwServerConfig.DEFAULT_UA
 
+    /**
+     * Разворачивает payload-шаблон в список сегментов для отправки.
+     *
+     * Правила (совместимо с поведением HTTP Injector):
+     *  - токены [crlf]/[cr]/[lf]/[host]/[port]/[ssh]/[ua]/... подставляются;
+     *  - [split] делит payload на части — каждая часть пишется в сокет ОТДЕЛЬНОЙ
+     *    записью (отдельным TCP-сегментом) СРАЗУ друг за другом, БЕЗ ожидания ответа
+     *    сервера. Это фрагментация для обхода DPI, а не запрос-ответ. Раньше здесь
+     *    ошибочно ждали и «съедали» ответ между частями — из-за этого payload с
+     *    [split] не подключался, хотя тот же payload работает в HTTP Injector;
+     *  - байты сегментов НЕ обрезаются (ведущий [cr]/[lf] сохраняется как есть —
+     *    он часть техники обхода и должен уходить на провод дословно);
+     *  - =N= внутри части — необязательная задержка N мс между кусками этой части.
+     */
     fun expandPayload(
         template: String,
         host: String,
@@ -52,35 +59,42 @@ object PayloadInjector {
             .replace(GwObf.T_PORT, port.toString(), ignoreCase = true)
             .replace(GwObf.T_HOST, host, ignoreCase = true)
 
+        // Заголовки HTTP-запроса должны завершаться пустой строкой. Если автор
+        // payload забыл финальный [crlf][crlf] — добавляем, не трогая остальное.
         if (!text.endsWith("\r\n\r\n")) {
             while (text.endsWith("\r\n")) text = text.dropLast(2)
             text += "\r\n\r\n"
         }
 
         val out = mutableListOf<String>()
-        // [split] делит payload на части: часть отправляется — ждём ответ сервера —
-        // отправляем следующую. Сам маркер и ведущие CR/LF в сокет не попадают:
-        // pipelining и мусор между запросами CDN воспринимает как ошибку (400/close).
         val splitParts = text.split(GwObf.TOK_SPLIT)
-        splitParts.forEachIndexed { partIndex, part ->
-            if (part.isEmpty()) return@forEachIndexed
+        splitParts.forEach { part ->
+            if (part.isEmpty()) return@forEach
             val segments = part.split(Regex("=\\s*\\d+\\s*="))
-            val delays = Regex("=\\s*(\\d+)\\s*=").findAll(part).map { it.groupValues[1].toInt() }.toList()
+            val delays = Regex("=\\s*(\\d+)\\s*=").findAll(part).map { it.groupValues[1].toLong() }.toList()
             segments.forEachIndexed { index, seg ->
-                val cleaned = seg.trimStart('\r', '\n')
-                if (cleaned.isNotEmpty()) out.add(cleaned)
+                // НЕ обрезаем ведущие \r/\n — байты уходят на провод дословно.
+                if (seg.isNotEmpty()) out.add(seg)
                 if (index < delays.size) out.add(GwObf.TOK_DELAY + delays[index])
             }
-            if (partIndex < splitParts.lastIndex) out.add(TOK_WAIT_RESPONSE)
+            // Между частями [split] НЕТ ожидания ответа: следующая часть пишется
+            // сразу отдельной записью (фрагментация), как в HTTP Injector.
         }
         return if (out.isEmpty()) listOf(text) else out
     }
 
     fun connect(config: GwServerConfig, protect: ((Socket) -> Unit)? = null): Socket {
-        return if (config.proxyHost.isBlank()) {
-            connectDirect(config, protect)
-        } else {
-            connectViaProxy(config, protect)
+        val hasProxy = config.proxyHost.isNotBlank()
+        val hasPayload = config.payload.isNotBlank()
+        return when {
+            // Через промежуточный прокси/CDN (обычный режим GW).
+            hasProxy -> connectAndInject(config, protect, viaProxy = true)
+            // Прямо на GW-эндпоинт (ws-мост) — ему тоже нужен upgrade-payload,
+            // иначе мост ответит 400 и SSH не поднимется. Раньше payload здесь
+            // не отправлялся вовсе — прямые GW-серверы не подключались.
+            hasPayload -> connectAndInject(config, protect, viaProxy = false)
+            // Ни прокси, ни payload — обычный SSH напрямую.
+            else -> connectDirect(config, protect)
         }
     }
 
@@ -92,17 +106,22 @@ object PayloadInjector {
         return socket
     }
 
-    private fun connectViaProxy(config: GwServerConfig, protect: ((Socket) -> Unit)?): Socket {
-        val host = config.proxyHost
+    private fun connectAndInject(
+        config: GwServerConfig,
+        protect: ((Socket) -> Unit)?,
+        viaProxy: Boolean,
+    ): Socket {
+        val peerHost = if (viaProxy) config.proxyHost else config.ipAddress
+        val peerPort = if (viaProxy) config.proxyPort else config.sshPort
         val useTls = config.proxyScheme.equals(GwObf.HTTPS, ignoreCase = true) || config.sni.isNotBlank()
 
         val tcp = Socket()
         protect?.invoke(tcp)
         tcp.tcpNoDelay = true
-        tcp.connect(InetSocketAddress(host, config.proxyPort), CONNECT_TIMEOUT_MS)
+        tcp.connect(InetSocketAddress(peerHost, peerPort), CONNECT_TIMEOUT_MS)
 
         val socket: Socket = if (useTls) {
-            wrapTls(tcp, host, config.sni.ifBlank { host })
+            wrapTls(tcp, peerHost, config.sni.ifBlank { peerHost })
         } else {
             tcp
         }
@@ -113,44 +132,32 @@ object PayloadInjector {
             val segments = expandPayload(
                 config.payload.ifBlank { GwServerConfig.defaultPayload() },
                 host = requestHost,
-                port = config.proxyPort,
+                port = peerPort,
                 sshHost = config.ipAddress,
                 sshPort = config.sshPort,
             )
-            val input = socket.getInputStream()
             val out = socket.getOutputStream()
-            val skipper = ResponseSkipper(input)
-            var earlyLeftover: ByteArray? = null
 
+            // Пишем все сегменты подряд (учитывая задержки). [split] уже разбил
+            // payload на отдельные записи — каждая уходит своим TCP-сегментом.
             for (segment in segments) {
-                when {
-                    segment.startsWith(GwObf.TOK_DELAY) ->
-                        Thread.sleep(segment.removePrefix(GwObf.TOK_DELAY).toLong())
-
-                    segment == TOK_WAIT_RESPONSE -> {
-                        // Ждём и съедаем ответ(ы) сервера на предыдущую часть,
-                        // чтобы следующий запрос не ушёл pipelining'ом.
-                        val lo = skipper.waitForResponses(socket, earlyLeftover)
-                        if (lo != null) earlyLeftover = lo
-                    }
-
-                    else -> {
-                        out.write(segment.toByteArray(Charsets.ISO_8859_1))
-                        out.flush()
-                    }
+                if (segment.startsWith(GwObf.TOK_DELAY)) {
+                    val ms = segment.removePrefix(GwObf.TOK_DELAY).toLongOrNull() ?: 0L
+                    if (ms > 0) Thread.sleep(ms)
+                } else {
+                    out.write(segment.toByteArray(Charsets.ISO_8859_1))
+                    out.flush()
                 }
             }
 
+            // Теперь пропускаем HTTP-ответ(ы) CDN/моста до начала данных туннеля
+            // (SSH-баннер). Всё, что после — отдаём SSH-клиенту как leftover.
             socket.soTimeout = RESPONSE_TIMEOUT_MS
+            val skipper = ResponseSkipper(socket.getInputStream())
             skipper.skipUntilTunnel()
             socket.soTimeout = 0
 
-            val leftover = earlyLeftover
-            return if (leftover != null) {
-                LeftoverSocket(socket, leftover + skipper.leftover)
-            } else {
-                LeftoverSocket(socket, skipper.leftover)
-            }
+            return LeftoverSocket(socket, skipper.leftover)
         } catch (e: Exception) {
             runCatching { socket.close() }
             throw e
@@ -161,7 +168,9 @@ object PayloadInjector {
         host.matches(Regex("\\d{1,3}(\\.\\d{1,3}){3}")) || host.contains(":")
 
     private fun wrapTls(tcp: Socket, peerHost: String, sniHost: String): SSLSocket {
-        val factory = SocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory
+        // ВАЖНО: именно SSLSocketFactory.getDefault(), а не SocketFactory.getDefault()
+        // (последний возвращает обычную фабрику и падал с ClassCastException на TLS).
+        val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
         val ssl = factory.createSocket(tcp, peerHost, tcp.port, true) as SSLSocket
         try {
             val params: SSLParameters = ssl.sslParameters
@@ -171,11 +180,12 @@ object PayloadInjector {
             ssl.sslParameters = params
         } catch (_: Exception) {
         }
+        runCatching { ssl.startHandshake() }
         return ssl
     }
 
     fun resolveRequestHost(config: GwServerConfig): String {
-        config.sni.isNotBlank() && return config.sni
+        if (config.sni.isNotBlank()) return config.sni
         if (!isIpLiteral(config.ipAddress)) return config.ipAddress
         if (config.proxyHost.isNotBlank() && !isIpLiteral(config.proxyHost)) return config.proxyHost
         return config.ipAddress
@@ -183,13 +193,18 @@ object PayloadInjector {
 
     private const val SKIP_CAP_BYTES = 262144
 
+    private enum class SkipResult { MORE, TUNNEL, UNKNOWN_BODY }
+
     /**
-     * Пропуск HTTP-ответов CDN/прокси до данных туннеля (SSH-баннера).
-     * Корректно обрабатывает тела ответов (chunked / content-length) — иначе
-     * терминатор чанка "0\r\n\r\n" попадает в туннель и ломает SSH-баннер.
+     * Пропуск HTTP-ответов CDN/прокси/моста до данных туннеля (SSH-баннера).
+     * Корректно обрабатывает:
+     *  - тела ответов (chunked / content-length);
+     *  - 101 Switching Protocols (после заголовков сразу начинается туннель);
+     *  - ответы без явной длины тела (Connection: close и т.п.) — в этом случае
+     *    переходим на поиск SSH-баннера в потоке (надёжнее строгого HTTP-парсинга).
      */
     private class ResponseSkipper(private val input: InputStream) {
-        val collected = ByteArrayOutputStream()
+        private val collected = ByteArrayOutputStream()
         var leftover: ByteArray = ByteArray(0)
             private set
 
@@ -211,7 +226,7 @@ object PayloadInjector {
         }
 
         /** Читает заголовки (начиная с уже прочитанного probe) и тело ответа. */
-        private fun skipResponse(probe: StringBuilder) {
+        private fun skipResponse(probe: StringBuilder): SkipResult {
             val head = StringBuilder(probe)
             var tail = probe.toString().takeLast(4)
             while (!(tail.endsWith("\r\n\r\n") || tail.endsWith("\n\n"))) {
@@ -221,7 +236,14 @@ object PayloadInjector {
                 head.append((b and 0xFF).toChar())
                 if (head.length > 65536) throw IOException("oversized HTTP headers")
             }
-            val lower = head.toString().lowercase()
+            val headStr = head.toString()
+            val lower = headStr.lowercase()
+            val status = parseStatus(headStr)
+
+            // 101 Switching Protocols: туннель начинается сразу после заголовков.
+            if (status == 101) return SkipResult.TUNNEL
+            // Ответы без тела по определению.
+            if (status == 204 || status == 304 || status in 100..199) return SkipResult.MORE
 
             val isChunked = lower.replace(" ", "").contains("transfer-encoding:chunked")
             if (isChunked) {
@@ -229,7 +251,6 @@ object PayloadInjector {
                     val sizeLine = readLine().trim().substringBefore(';')
                     val size = sizeLine.toIntOrNull(16) ?: throw IOException("bad chunk size")
                     if (size == 0) {
-                        // trailer-секция: читаем строки до пустой
                         while (readLine() != "\r\n") {
                             // skip trailers
                         }
@@ -243,24 +264,40 @@ object PayloadInjector {
                     readByte() // \r
                     readByte() // \n
                 }
-            } else {
-                Regex("content-length:\\s*(\\d+)", RegexOption.IGNORE_CASE)
-                    .find(head.toString())?.groupValues?.get(1)?.toIntOrNull()?.let { len ->
-                        var remaining = len
-                        while (remaining > 0) {
-                            readByte()
-                            remaining--
-                        }
-                    }
+                return SkipResult.MORE
             }
+
+            val contentLength = Regex("content-length:\\s*(\\d+)", RegexOption.IGNORE_CASE)
+                .find(headStr)?.groupValues?.get(1)?.toIntOrNull()
+            if (contentLength != null) {
+                var remaining = contentLength
+                while (remaining > 0) {
+                    readByte()
+                    remaining--
+                }
+                return SkipResult.MORE
+            }
+
+            // Длина тела неизвестна (нет Content-Length, не chunked). Дальше строго
+            // парсить нельзя — ищем SSH-баннер в потоке напрямую.
+            return SkipResult.UNKNOWN_BODY
         }
 
-        /** Читает до 5 байт; true — поток начинается с "HTTP/" (ещё один ответ). */
+        private fun parseStatus(head: String): Int {
+            val firstLine = head.substringBefore('\n').trim()
+            // "HTTP/1.1 101 Switching Protocols"
+            val parts = firstLine.split(' ')
+            if (parts.size >= 2 && parts[0].startsWith("HTTP/", ignoreCase = true)) {
+                return parts[1].toIntOrNull() ?: -1
+            }
+            return -1
+        }
+
+        /** Читает ровно 5 байт; true — поток начинается с "HTTP/" (ещё один ответ). */
         private fun probeIsHttp(probe: StringBuilder): Boolean {
             while (probe.length < 5) {
                 val b = readByte()
                 probe.append((b and 0xFF).toChar())
-                if (probe.length < 5 && (b == '\r'.code || b == '\n'.code)) break
             }
             return probe.startsWith("HTTP/")
         }
@@ -270,50 +307,57 @@ object PayloadInjector {
             return all.copyOfRange(probeStart, all.size)
         }
 
-        /** Основной цикл: скипает все HTTP-ответы, останавливается на данных туннеля. */
+        /**
+         * Поиск SSH-баннера ("SSH-") в потоке. Всё до него — мусор ответа,
+         * начиная с него — данные туннеля (сохраняются в leftover).
+         */
+        private fun scanForSshBanner() {
+            val window = ByteArray(4)
+            var filled = 0
+            var scanned = 0
+            while (true) {
+                val b = input.read()
+                if (b == -1) throw IOException("connection closed before tunnel established")
+                if (filled < 4) {
+                    window[filled++] = b.toByte()
+                } else {
+                    window[0] = window[1]; window[1] = window[2]; window[2] = window[3]
+                    window[3] = b.toByte()
+                }
+                if (filled == 4 &&
+                    window[0] == 'S'.code.toByte() && window[1] == 'S'.code.toByte() &&
+                    window[2] == 'H'.code.toByte() && window[3] == '-'.code.toByte()
+                ) {
+                    leftover = "SSH-".toByteArray(Charsets.US_ASCII)
+                    return
+                }
+                if (++scanned > SKIP_CAP_BYTES) throw IOException("oversized HTTP response")
+            }
+        }
+
+        /** Основной цикл: скипает HTTP-ответы, останавливается на данных туннеля. */
         fun skipUntilTunnel() {
             while (true) {
                 if (collected.size() > SKIP_CAP_BYTES) throw IOException("oversized HTTP response")
                 val probeStart = collected.size()
                 val probe = StringBuilder()
-                if (probeIsHttp(probe)) {
-                    skipResponse(probe)
-                } else {
+                if (!probeIsHttp(probe)) {
+                    // Поток не начинается с "HTTP/" — это уже данные туннеля.
                     leftover = takeLeftover(probeStart)
                     return
                 }
-            }
-        }
-
-        /**
-         * Ожидание ответов после промежуточной части payload ([split]).
-         * Ответы съедаются; если за SPLIT_IDLE_TIMEOUT_MS тишина — выходим (null).
-         * Если пришли данные туннеля — возвращаем их как leftover.
-         */
-        fun waitForResponses(socket: Socket, existingLeftover: ByteArray?): ByteArray? {
-            val startedAt = System.currentTimeMillis()
-            while (true) {
-                socket.soTimeout = SPLIT_IDLE_TIMEOUT_MS
-                val first = try {
-                    input.read()
-                } catch (e: java.io.InterruptedIOException) {
-                    return null // тишина — сервер пока не ответил, шлём следующую часть
-                } finally {
-                    socket.soTimeout = RESPONSE_TIMEOUT_MS
+                when (skipResponse(probe)) {
+                    SkipResult.MORE -> continue
+                    SkipResult.TUNNEL -> {
+                        // После 101 туннель начинается немедленно; ещё ничего не прочитано.
+                        leftover = ByteArray(0)
+                        return
+                    }
+                    SkipResult.UNKNOWN_BODY -> {
+                        scanForSshBanner()
+                        return
+                    }
                 }
-                if (first == -1) throw IOException("connection closed before tunnel established")
-                if (collected.size() > SKIP_CAP_BYTES) throw IOException("oversized HTTP response")
-
-                val probeStart = collected.size()
-                collected.write(first)
-                val probe = StringBuilder().append((first and 0xFF).toChar())
-                if (probeIsHttp(probe)) {
-                    skipResponse(probe)
-                } else {
-                    val lo = takeLeftover(probeStart)
-                    return if (existingLeftover != null) existingLeftover + lo else lo
-                }
-                if (System.currentTimeMillis() - startedAt > SPLIT_MAX_WAIT_MS) return null
             }
         }
     }

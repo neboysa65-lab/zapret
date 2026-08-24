@@ -28,11 +28,21 @@ class ServerRepositoryImpl @Inject constructor(
     override suspend fun getServersGw(context: android.content.Context, param: MutableMap<String, Any>) {
         try {
             val response = api.getServersGw(param)
-            if (response.success != 1) {
+            // success может прийти как 1 (успех). Если поле не парсится (null), но
+            // сервер вернул данные — не считаем это ошибкой: старые/иные бэкенды
+            // отдают success по-разному. Ошибкой считаем только явный не-успех.
+            if (response.success != null && response.success != 1) {
                 android.util.Log.e("GwServerRepository", "getServersGw failed: ${response.message}")
                 return
             }
-            val servers = response.data?.mapNotNull { dto ->
+
+            val dtos = response.data
+            if (dtos == null) {
+                android.util.Log.e("GwServerRepository", "getServersGw: null data, keeping previous list")
+                return
+            }
+
+            val decoded = dtos.mapNotNull { dto ->
                 val meta = dto.meta ?: return@mapNotNull null
                 val enc = dto.enc
                 com.witvpn.ikev2.domain.model.ServerGw.decrypt(
@@ -50,8 +60,30 @@ class ServerRepositoryImpl @Inject constructor(
                     ct = enc?.ct,
                     iv = enc?.iv
                 )
-            }?.filter { it.config != null } ?: emptyList()
-            gwState.update { servers }
+            }
+            val usable = decoded.filter { it.config != null }
+            val failed = decoded.size - usable.size
+            if (failed > 0) {
+                android.util.Log.w(
+                    "GwServerRepository",
+                    "getServersGw: $failed/${decoded.size} серверов не расшифровались " +
+                        "(ключ устройства ещё не зарегистрирован на сервере?)"
+                )
+            }
+
+            // Если сервер прислал ноды, но НИ ОДНА не расшифровалась — это почти
+            // наверняка проблема ключа/регистрации на этом устройстве, а не удаление
+            // серверов. В таком случае НЕ затираем ранее показанный список, чтобы
+            // серверы не «пропадали» из UI. Пустой ответ (dtos пуст) — легитимно.
+            if (dtos.isNotEmpty() && usable.isEmpty()) {
+                android.util.Log.e(
+                    "GwServerRepository",
+                    "getServersGw: все ${dtos.size} серверов не расшифровались, оставляем прежний список"
+                )
+                return
+            }
+
+            gwState.update { usable }
         } catch (e: Exception) {
             android.util.Log.e("GwServerRepository", "getServersGw EXCEPTION: ${e.message}", e)
         }
