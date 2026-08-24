@@ -1,5 +1,6 @@
 package com.witvpn.gw.injector
 
+import android.util.Log
 import com.witvpn.gw.crypto.GwObf
 import com.witvpn.gw.model.GwServerConfig
 import java.io.ByteArrayInputStream
@@ -18,10 +19,10 @@ import javax.net.ssl.SSLSocketFactory
 
 object PayloadInjector {
 
+    private const val TAG = "GwInjector"
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val RESPONSE_TIMEOUT_MS = 15_000
 
-    // Служебный маркер задержки между сегментами (в сокет не пишется).
     private val DEFAULT_UA: String get() = GwServerConfig.DEFAULT_UA
 
     /**
@@ -31,9 +32,7 @@ object PayloadInjector {
      *  - токены [crlf]/[cr]/[lf]/[host]/[port]/[ssh]/[ua]/... подставляются;
      *  - [split] делит payload на части — каждая часть пишется в сокет ОТДЕЛЬНОЙ
      *    записью (отдельным TCP-сегментом) СРАЗУ друг за другом, БЕЗ ожидания ответа
-     *    сервера. Это фрагментация для обхода DPI, а не запрос-ответ. Раньше здесь
-     *    ошибочно ждали и «съедали» ответ между частями — из-за этого payload с
-     *    [split] не подключался, хотя тот же payload работает в HTTP Injector;
+     *    сервера. Это фрагментация для обхода DPI, а не запрос-ответ;
      *  - байты сегментов НЕ обрезаются (ведущий [cr]/[lf] сохраняется как есть —
      *    он часть техники обхода и должен уходить на провод дословно);
      *  - =N= внутри части — необязательная задержка N мс между кусками этой части.
@@ -77,8 +76,6 @@ object PayloadInjector {
                 if (seg.isNotEmpty()) out.add(seg)
                 if (index < delays.size) out.add(GwObf.TOK_DELAY + delays[index])
             }
-            // Между частями [split] НЕТ ожидания ответа: следующая часть пишется
-            // сразу отдельной записью (фрагментация), как в HTTP Injector.
         }
         return if (out.isEmpty()) listOf(text) else out
     }
@@ -90,8 +87,7 @@ object PayloadInjector {
             // Через промежуточный прокси/CDN (обычный режим GW).
             hasProxy -> connectAndInject(config, protect, viaProxy = true)
             // Прямо на GW-эндпоинт (ws-мост) — ему тоже нужен upgrade-payload,
-            // иначе мост ответит 400 и SSH не поднимется. Раньше payload здесь
-            // не отправлялся вовсе — прямые GW-серверы не подключались.
+            // иначе мост ответит 400 и SSH не поднимется.
             hasPayload -> connectAndInject(config, protect, viaProxy = false)
             // Ни прокси, ни payload — обычный SSH напрямую.
             else -> connectDirect(config, protect)
@@ -106,14 +102,42 @@ object PayloadInjector {
         return socket
     }
 
+    /**
+     * Двухступенчатая стратегия: 1) авторский payload (нужен на сетях с DPI/
+     * транспроксей ISP); 2) если CDN отверг и закрыл — чистый WebSocket-upgrade.
+     */
     private fun connectAndInject(
         config: GwServerConfig,
         protect: ((Socket) -> Unit)?,
         viaProxy: Boolean,
     ): Socket {
+        val userPayload = config.payload.ifBlank { GwServerConfig.defaultPayload() }
+        val fallbackPayload = GwServerConfig.defaultPayload()
+
+        try {
+            return attemptInject(config, protect, viaProxy, userPayload)
+        } catch (first: Exception) {
+            if (userPayload.trim() == fallbackPayload.trim()) throw first
+            Log.w(TAG, "GW payload attempt failed (${first.message}); retrying with clean WebSocket upgrade")
+            try {
+                return attemptInject(config, protect, viaProxy, fallbackPayload)
+            } catch (second: Exception) {
+                Log.w(TAG, "GW clean-upgrade fallback also failed: ${second.message}")
+                throw first
+            }
+        }
+    }
+
+    private fun attemptInject(
+        config: GwServerConfig,
+        protect: ((Socket) -> Unit)?,
+        viaProxy: Boolean,
+        payloadTemplate: String,
+    ): Socket {
         val peerHost = if (viaProxy) config.proxyHost else config.ipAddress
         val peerPort = if (viaProxy) config.proxyPort else config.sshPort
-        val useTls = config.proxyScheme.equals(GwObf.HTTPS, ignoreCase = true) || config.sni.isNotBlank()
+        val useTls = config.proxyScheme.equals(GwObf.HTTPS, ignoreCase = true) ||
+            (viaProxy && config.sni.isNotBlank() && peerPort == 443)
 
         val tcp = Socket()
         protect?.invoke(tcp)
@@ -130,7 +154,7 @@ object PayloadInjector {
         try {
             val requestHost = resolveRequestHost(config)
             val segments = expandPayload(
-                config.payload.ifBlank { GwServerConfig.defaultPayload() },
+                payloadTemplate,
                 host = requestHost,
                 port = peerPort,
                 sshHost = config.ipAddress,
@@ -150,8 +174,7 @@ object PayloadInjector {
                 }
             }
 
-            // Теперь пропускаем HTTP-ответ(ы) CDN/моста до начала данных туннеля
-            // (SSH-баннер). Всё, что после — отдаём SSH-клиенту как leftover.
+            // Пропускаем HTTP-ответ(ы) CDN/моста до начала данных туннеля (SSH-баннер).
             socket.soTimeout = RESPONSE_TIMEOUT_MS
             val skipper = ResponseSkipper(socket.getInputStream())
             skipper.skipUntilTunnel()
@@ -193,7 +216,7 @@ object PayloadInjector {
 
     private const val SKIP_CAP_BYTES = 262144
 
-    private enum class SkipResult { MORE, TUNNEL, UNKNOWN_BODY }
+    private enum class SkipResult { MORE, TUNNEL, UNKNOWN_BODY, CLOSED }
 
     /**
      * Пропуск HTTP-ответов CDN/прокси/моста до данных туннеля (SSH-баннера).
@@ -205,6 +228,7 @@ object PayloadInjector {
      */
     private class ResponseSkipper(private val input: InputStream) {
         private val collected = ByteArrayOutputStream()
+        private var lastStatus: Int = -1
         var leftover: ByteArray = ByteArray(0)
             private set
 
@@ -239,11 +263,17 @@ object PayloadInjector {
             val headStr = head.toString()
             val lower = headStr.lowercase()
             val status = parseStatus(headStr)
+            lastStatus = status
 
             // 101 Switching Protocols: туннель начинается сразу после заголовков.
             if (status == 101) return SkipResult.TUNNEL
+
+            val willClose = lower.replace(" ", "").contains("connection:close")
+
             // Ответы без тела по определению.
-            if (status == 204 || status == 304 || status in 100..199) return SkipResult.MORE
+            if (status == 204 || status == 304 || status in 100..199) {
+                return if (willClose) SkipResult.CLOSED else SkipResult.MORE
+            }
 
             val isChunked = lower.replace(" ", "").contains("transfer-encoding:chunked")
             if (isChunked) {
@@ -264,7 +294,7 @@ object PayloadInjector {
                     readByte() // \r
                     readByte() // \n
                 }
-                return SkipResult.MORE
+                return if (willClose) SkipResult.CLOSED else SkipResult.MORE
             }
 
             val contentLength = Regex("content-length:\\s*(\\d+)", RegexOption.IGNORE_CASE)
@@ -275,7 +305,8 @@ object PayloadInjector {
                     readByte()
                     remaining--
                 }
-                return SkipResult.MORE
+                // Сервер явно закрывает соединение и туннеля не будет — не ждём.
+                return if (willClose) SkipResult.CLOSED else SkipResult.MORE
             }
 
             // Длина тела неизвестна (нет Content-Length, не chunked). Дальше строго
@@ -285,7 +316,6 @@ object PayloadInjector {
 
         private fun parseStatus(head: String): Int {
             val firstLine = head.substringBefore('\n').trim()
-            // "HTTP/1.1 101 Switching Protocols"
             val parts = firstLine.split(' ')
             if (parts.size >= 2 && parts[0].startsWith("HTTP/", ignoreCase = true)) {
                 return parts[1].toIntOrNull() ?: -1
@@ -349,7 +379,7 @@ object PayloadInjector {
                 when (skipResponse(probe)) {
                     SkipResult.MORE -> continue
                     SkipResult.TUNNEL -> {
-                        // После 101 туннель начинается немедленно; ещё ничего не прочитано.
+                        // После 101 туннель начинается немедленно.
                         leftover = ByteArray(0)
                         return
                     }
@@ -357,6 +387,9 @@ object PayloadInjector {
                         scanForSshBanner()
                         return
                     }
+                    SkipResult.CLOSED -> throw IOException(
+                        "gateway rejected payload (HTTP $lastStatus) and closed the connection"
+                    )
                 }
             }
         }

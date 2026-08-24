@@ -149,6 +149,13 @@ object VlessParser {
         }
     }
 
+    private fun defaultSniffing(): V2RayConfig.SniffingObject =
+        V2RayConfig.SniffingObject().apply {
+            enabled = true
+            destOverride = listOf("http", "tls", "quic")
+            routeOnly = false
+        }
+
     private fun baseInbounds(localSocksPort: Int, localHttpPort: Int): List<V2RayConfig.InboundObject> {
         return listOf(
             V2RayConfig.InboundObject().apply {
@@ -160,15 +167,36 @@ object VlessParser {
                     auth = "noauth"
                     udp = true
                 }
+                sniffing = defaultSniffing()
             },
             V2RayConfig.InboundObject().apply {
                 tag = "http"
                 port = localHttpPort
                 listen = "127.0.0.1"
                 protocol = "http"
+                sniffing = defaultSniffing()
             }
         )
     }
+
+    private fun defaultDns(): V2RayConfig.DnsObject =
+        V2RayConfig.DnsObject().apply {
+            queryStrategy = "UseIP"
+            servers = listOf("1.1.1.1", "1.0.0.1")
+        }
+
+    private fun defaultRouting(): V2RayConfig.RoutingObject =
+        V2RayConfig.RoutingObject().apply {
+            domainMatcher = "hybrid"
+            domainStrategy = "IPIfNonMatch"
+            rules = listOf(
+                V2RayConfig.RoutingRule().apply {
+                    type = "field"
+                    outboundTag = "direct"
+                    protocol = listOf("bittorrent")
+                }
+            )
+        }
 
     private fun directAndBlock(): List<V2RayConfig.OutboundObject> {
         return listOf(
@@ -187,10 +215,13 @@ object VlessParser {
 
     private fun toVlessConfig(config: VlessConfig, localSocksPort: Int, localHttpPort: Int): String {
         val v2rayConfig = V2RayConfig()
-        v2rayConfig.log = V2RayConfig.LogObject().apply { loglevel = "info" }
+        v2rayConfig.log = V2RayConfig.LogObject().apply { loglevel = "warning" }
+        v2rayConfig.dns = defaultDns()
         v2rayConfig.inbounds = baseInbounds(localSocksPort, localHttpPort)
 
         val grpcService = config.serviceName.ifEmpty { config.path }
+        val netType = config.type.ifEmpty { "tcp" }
+        val effectiveFlow = if (netType == "tcp") config.flow else ""
 
         val proxyOutbound = V2RayConfig.OutboundObject().apply {
             tag = "proxy"
@@ -203,15 +234,15 @@ object VlessParser {
                         users = listOf(
                             V2RayConfig.VlessOutboundSettings.UserObject().apply {
                                 id = config.uuid
-                                encryption = config.encryption
-                                flow = config.flow
+                                encryption = config.encryption.ifEmpty { "none" }
+                                flow = effectiveFlow
                             }
                         )
                     }
                 )
             }
             streamSettings = V2RayConfig.StreamSettingsObject().apply {
-                network = config.type
+                network = netType
                 security = config.security
 
                 when (config.security) {
@@ -232,7 +263,10 @@ object VlessParser {
                     }
                 }
 
-                when (config.type) {
+                when (netType) {
+                    "tcp" -> {
+                        tcpSettings = V2RayConfig.TcpSettingsObject()
+                    }
                     "ws" -> {
                         wsSettings = V2RayConfig.WsSettingsObject().apply {
                             path = config.path.ifEmpty { "/" }
@@ -253,6 +287,7 @@ object VlessParser {
         }
 
         v2rayConfig.outbounds = listOf(proxyOutbound) + directAndBlock()
+        v2rayConfig.routing = defaultRouting()
         return gson.toJson(v2rayConfig)
     }
 
@@ -262,7 +297,8 @@ object VlessParser {
      */
     private fun toHysteria2Config(config: VlessConfig, localSocksPort: Int, localHttpPort: Int): String {
         val v2rayConfig = V2RayConfig()
-        v2rayConfig.log = V2RayConfig.LogObject().apply { loglevel = "info" }
+        v2rayConfig.log = V2RayConfig.LogObject().apply { loglevel = "warning" }
+        v2rayConfig.dns = defaultDns()
         v2rayConfig.inbounds = baseInbounds(localSocksPort, localHttpPort)
 
         val sni = config.sni.ifEmpty { config.address }
@@ -304,6 +340,7 @@ object VlessParser {
         }
 
         v2rayConfig.outbounds = listOf(proxyOutbound) + directAndBlock()
+        v2rayConfig.routing = defaultRouting()
         return gson.toJson(v2rayConfig)
     }
 
@@ -311,13 +348,40 @@ object VlessParser {
 
     class V2RayConfig {
         var log: LogObject? = null
+        var dns: DnsObject? = null
         var inbounds: List<InboundObject>? = null
         var outbounds: List<OutboundObject>? = null
+        var routing: RoutingObject? = null
 
         class LogObject {
             var access: String? = null
             var error: String? = null
             var loglevel: String? = null
+        }
+
+        class DnsObject {
+            var queryStrategy: String? = null
+            var servers: List<String>? = null
+        }
+
+        class RoutingObject {
+            var domainMatcher: String? = null
+            var domainStrategy: String? = null
+            var rules: List<RoutingRule>? = null
+        }
+
+        class RoutingRule {
+            var type: String? = null
+            var outboundTag: String? = null
+            var protocol: List<String>? = null
+            var ip: List<String>? = null
+            var domain: List<String>? = null
+        }
+
+        class SniffingObject {
+            var enabled: Boolean? = null
+            var destOverride: List<String>? = null
+            var routeOnly: Boolean? = null
         }
 
         class InboundObject {
@@ -326,6 +390,7 @@ object VlessParser {
             var port: Int? = null
             var protocol: String? = null
             var settings: Any? = null
+            var sniffing: SniffingObject? = null
         }
 
         class SocksInboundSettings {
@@ -377,10 +442,14 @@ object VlessParser {
             var security: String? = null
             var tlsSettings: TlsSettingsObject? = null
             var realitySettings: RealitySettingsObject? = null
+            var tcpSettings: TcpSettingsObject? = null
             var wsSettings: WsSettingsObject? = null
             var grpcSettings: GrpcSettingsObject? = null
             var hysteriaSettings: HysteriaSettingsObject? = null
         }
+
+        /** Пустой tcpSettings ({}), как в рабочем эталоне для raw-TCP/Reality. */
+        class TcpSettingsObject
 
         class HysteriaSettingsObject {
             var version: Int? = 2
