@@ -241,6 +241,13 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                         handler.removeCallbacks(gwConnectionTimeoutRunnable)
                         showProgress(false)
                         updateVlessState(false)
+                        // Сообщаем бэкенду об отключении и при штатном стопе, и при
+                        // обрыве туннеля (ошибка/сбой) — иначе онлайн-счётчик «зависает».
+                        val ctx = context
+                        val userId = shareViewModel.userLiveData.value?.id ?: ""
+                        if (ctx != null && userId.isNotEmpty()) {
+                            ConnectionTracker.reportDisconnect(ctx, userId)
+                        }
                         if (isGwMode && !GwManager.lastError.isNullOrBlank()) {
                             Toast.makeText(context, GwManager.lastError, Toast.LENGTH_LONG).show()
                         }
@@ -395,6 +402,16 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                 setProtocol("GW")
             }
             showProgress(true)
+        } else {
+            // Ничего не подключено. Если мы на вкладке не-IKEv2 (GW/AWG/VLESS),
+            // приводим кнопку в состояние «Connect» и убираем прогресс — иначе
+            // после обрыва туннеля в фоне на экране «залипает» Connecting.../Disconnect.
+            // IKEv2 сверяется отдельно через stateLiveData observer.
+            if (isGwMode || isAwgMode || isVlessMode) {
+                isVlessConnected = false
+                showProgress(false)
+                updateVlessState(false)
+            }
         }
     }
 
@@ -791,7 +808,7 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                     } else {
                         when {
                             isAwgMode -> updateAwgServerUI()
-                            isGwMode -> updateGwServerUI()
+                            isGwMode -> reconnectGwIfServerChanged(savedServer)
                             !isVlessMode -> updateServerButton(value = savedServer)
                         }
                     }
@@ -1168,13 +1185,33 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         return if (draft.protocol.equals("gw", ignoreCase = true)) draft else null
     }
 
+    /**
+     * Пользователь выбрал GW-сервер из списка. Если туннель уже активен и выбран
+     * ДРУГОЙ сервер — переключаемся на него (стоп + переподключение). Иначе просто
+     * обновляем подпись. Проверка «сервер изменился» защищает от лишнего
+     * переподключения, когда LiveData переотдаёт последнее значение новому
+     * подписчику (например, при пересоздании фрагмента).
+     */
+    private fun reconnectGwIfServerChanged(savedServer: Server) {
+        val current = GwManager.selectedServer
+        val active = GwManager.isConnected() || GwManager.state == GwManager.State.CONNECTING
+        val changed = current == null || current.ipAddress != savedServer.ipAddress
+        if (active && changed) {
+            onServerSelectedFromList(savedServer)
+        } else {
+            updateGwServerUI()
+        }
+    }
+
     private fun updateGwServerUI() {
         clearConnectionTitleLeadingIcon()
         val gwServers = viewModel2.serversGwList.value
 
         val draft = getGwDraft()
         if (draft != null && !gwServers.isNullOrEmpty()) {
-            val matched = gwServers.find { it.id == draft.id || it.ipAddress == draft.ipAddress }
+            // draft.id хранится с префиксом ("gw_<id>"), у ServerGw.id префикса нет —
+            // сравниваем с учётом префикса, иначе матч по id всегда ложный.
+            val matched = gwServers.find { "gw_${it.id}" == draft.id || it.ipAddress == draft.ipAddress }
             if (matched != null) {
                 GwManager.selectedServer = matched.config
                 updateServerButton(Server.fromGw(matched))
@@ -1208,10 +1245,8 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             val ctx = context ?: return
             GwManager.stopVpn(ctx)
             updateVlessState(false)
-            val userId = shareViewModel.userLiveData.value?.id ?: ""
-            if (userId.isNotEmpty()) {
-                ConnectionTracker.reportDisconnect(ctx, userId)
-            }
+            // reportDisconnect выполняется в gwListener при переходе в DISCONNECTED,
+            // чтобы не дублировать и покрывать также самопроизвольный обрыв туннеля.
             return
         }
         if (GwManager.state == GwManager.State.CONNECTING) {
@@ -1510,7 +1545,7 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             ?.takeIf { it.protocol.equals("gw", ignoreCase = true) }
             ?.let { selected ->
                 viewModel2.serversGwList.value?.find {
-                    it.id == selected.id || it.ipAddress == selected.ipAddress
+                    "gw_${it.id}" == selected.id || it.ipAddress == selected.ipAddress
                 }
             }
 
