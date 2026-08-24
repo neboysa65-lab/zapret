@@ -1,0 +1,37 @@
+name: Google Play Release
+
+on:
+  push:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decode Keystore
+        id: decode_keystore
+        uses: timheuer/base64-to-file@v1
+        with:
+          fileName: 'keystore/keystore.jks'
+          encodedString: ${{ secrets.ANDROID_KEYSTORE }}
+      - uses: actions/checkout@v3
+      - name: set up JDK 11
+        uses: actions/setup-java@v1
+        with:
+          java-version: 11
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+      - name: Make artifact
+        run: ./gradlew app:assembleRelease
+      - name: sign apk
+        run: jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -storepass ${{ secrets.SIGNING_PASSWORD }} -keypass ${{ secrets.SIGNING_PASSWORD }} -keystore /home/runner/work/_temp/keystore/keystore.jks app/build/outputs/apk/release/*.apk ${{ secrets.SIGNING_KEY_ALIAS }}
+
+      - name: Get cuurent date
+        run: echo "datetime=$(date +'%d_%m_%Y_%H-%M-%S')" >> $GITHUB_OUTPUT
+        id: version
+      - name: Publish snapshot package
+        run: cp app/build/outputs/apk/release/*.apk app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v3
+        with:
+          name: SNAPSHOT-${{ steps.version.outputs.datetime }}
+          path: app/build/outputs/apk/release/app-release.apk

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Значения по умолчанию для Firebase Remote Config.
+
+    Эти значения используются, пока приложение ещё не скачало актуальный
+    конфиг с сервера (первый запуск, нет сети и т.п.). Они совпадают с теми
+    доменами, что раньше были «зашиты» в build.gradle, поэтому поведение
+    приложения без Remote Config остаётся прежним.
+
+    Чтобы сменить домен «на лету» — НЕ трогайте этот файл, а измените параметр
+    в консоли Firebase → Remote Config (ключи api_base_url, payment_url,
+    subscription_url).
+-->
+<defaultsMap>
+    <entry>
+        <key>api_base_url</key>
+        <value>https://api-gwvpn-app.vpnhub.xyz/vpn/api/v1/</value>
+    </entry>
+    <entry>
+        <key>payment_url</key>
+        <value>https://api-gwvpn-app.vpnhub.xyz/vpn/client/payment/new?userId=%s</value>
+    </entry>
+    <entry>
+        <key>subscription_url</key>
+        <value>https://sub.gw-vpn.click/jzp2_Fc1rqXDrBu1</value>
+    </entry>
+</defaultsMap>

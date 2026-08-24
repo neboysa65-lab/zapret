@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black_almost2">
+
+    <!-- Top background globe image -->
+    <ImageView
+        android:id="@+id/iv_top_banner"
+        android:layout_width="500dp"
+        android:layout_height="500dp"
+        android:rotation="20"
+        android:scaleType="centerCrop"
+        android:scaleY="-1"
+        android:src="@drawable/globus"
+        android:translationX="115dp"
+        android:translationY="-135dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Fade overlay to smoothly transition the image into the dark background -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="350dp"
+        android:background="@drawable/bg_fade_to_black"
+        app:layout_constraintTop_toTopOf="parent"/>
+
+    <!-- Close button -->
+    <ImageView
+        android:id="@+id/iv_close"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_marginTop="32dp"
+        android:layout_marginEnd="16dp"
+        android:src="@drawable/ic_close_circle"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:fillViewport="true"
+        app:layout_constraintTop_toBottomOf="@id/iv_close"
+        app:layout_constraintBottom_toTopOf="@id/bottom_container">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="24dp"
+            android:paddingBottom="24dp">
+
+            <TextView
+                android:id="@+id/tvHeaderTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Откройте возможности\nPremium тарифа"
+                android:textColor="@color/white"
+                android:textSize="26sp"
+                android:textStyle="bold"
+                android:fontFamily="sans-serif-black"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="24dp" />
+
+            <!-- Features List -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp" android:gravity="center_vertical">
+                <RelativeLayout
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:clipToOutline="true"
+                    android:background="@drawable/ic_premium_feature_1" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Быстрая разблокировка любого\nконтента" android:textColor="#E0E0E0" android:textSize="16sp" android:layout_marginStart="16dp"/>
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp" android:gravity="center_vertical">
+                <RelativeLayout
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:clipToOutline="true"
+                    android:background="@drawable/ic_premium_feature_2" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Нет ограничений скорости" android:textColor="#E0E0E0" android:textSize="16sp" android:layout_marginStart="16dp"/>
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp" android:gravity="center_vertical">
+                <RelativeLayout
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:clipToOutline="true"
+                    android:background="@drawable/ic_premium_feature_3" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Анонимный просмотр" android:textColor="#E0E0E0" android:textSize="16sp" android:layout_marginStart="16dp"/>
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp" android:gravity="center_vertical">
+                <RelativeLayout
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:clipToOutline="true"
+                    android:background="@drawable/ic_premium_feature_4" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Смотрите видео в HD без зависаний" android:textColor="#E0E0E0" android:textSize="16sp" android:layout_marginStart="16dp"/>
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp" android:gravity="center_vertical">
+                <RelativeLayout
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:clipToOutline="true"
+                    android:background="@drawable/ic_premium_feature_5" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Без логов, защита данных" android:textColor="#E0E0E0" android:textSize="16sp" android:layout_marginStart="16dp"/>
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="32dp" android:gravity="center_vertical">
+                <RelativeLayout
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:clipToOutline="true"
+                    android:background="@drawable/ic_premium_feature_6" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Отключение рекламы" android:textColor="#E0E0E0" android:textSize="16sp" android:layout_marginStart="16dp"/>
+            </LinearLayout>
+
+            <!-- Plans -->
+            <LinearLayout
+                android:id="@+id/six_month_card"
+                android:layout_width="match_parent"
+                android:layout_height="70dp"
+                android:background="@drawable/bg_premium_card_selected"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="16dp"
+                android:layout_marginBottom="12dp">
+
+                <ImageView
+                    android:id="@+id/six_month_radio"
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:src="@drawable/radio_checked" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:text="6 месяцев"
+                    android:textColor="@color/white"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:background="@drawable/bg_premium_badge"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="4dp"
+                    android:text="-10%"
+                    android:textColor="@color/blue"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="1614 ₽"
+                    android:textColor="@color/white"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/three_month_card"
+                android:layout_width="match_parent"
+                android:layout_height="70dp"
+                android:background="@drawable/bg_premium_card_unselected"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="16dp"
+                android:layout_marginBottom="12dp">
+
+                <ImageView
+                    android:id="@+id/three_month_radio"
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:src="@drawable/radio_unchecked" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:text="3 месяца"
+                    android:textColor="@color/white"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:background="@drawable/bg_premium_badge"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="4dp"
+                    android:text="-8%"
+                    android:textColor="@color/blue"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="825 ₽"
+                    android:textColor="@color/white"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/one_month_card"
+                android:layout_width="match_parent"
+                android:layout_height="70dp"
+                android:background="@drawable/bg_premium_card_unselected"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="16dp">
+
+                <ImageView
+                    android:id="@+id/one_month_radio"
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:src="@drawable/radio_unchecked" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:text="1 месяц"
+                    android:textColor="@color/white"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="299 ₽"
+                    android:textColor="@color/white"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:id="@+id/bottom_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="24dp"
+        android:paddingBottom="24dp"
+        android:paddingTop="16dp"
+        android:background="@color/black_almost2"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Подключив нашу подписку,\nвы помогаете нам стать лучше"
+            android:textColor="@color/grey"
+            android:textSize="13sp"
+            android:gravity="center"
+            android:layout_marginBottom="16dp" />
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btn_buy"
+            android:layout_width="match_parent"
+            android:layout_height="62dp"
+            android:background="@drawable/bg_premium_buy_btn"
+            android:text="Купить"
+            android:textAllCaps="false"
+            android:textColor="@color/white"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

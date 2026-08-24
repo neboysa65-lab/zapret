@@ -1,0 +1,336 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:background="#1B1E24">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/img_globe"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical"
+            android:paddingHorizontal="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/play"
+                android:text="@string/app_name"
+                android:textColor="@color/white"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+
+            <include
+                android:id="@+id/pro"
+                layout="@layout/view_diamond_pro"
+                />
+
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/timeLimit"
+            style="@style/Decorative"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="64dp"
+            android:text="00:00:00"
+            android:textColor="@color/grey" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/tvUpload"
+                style="@style/Subhead.Semibold"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:drawableStart="@drawable/ic_chevrone_up"
+                android:drawablePadding="4dp"
+                android:text="0.0"
+                android:textColor="#8C9197" />
+
+            <TextView
+                android:id="@+id/upload_period"
+                style="@style/Footnote"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:text="Mb/s"
+                android:textColor="#8C9197"
+                android:visibility="gone" />
+
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:id="@+id/tvDownload"
+                style="@style/Subhead.Semibold"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="24dp"
+                android:drawableStart="@drawable/ic_chevrone_down"
+                android:drawablePadding="4dp"
+                android:text="0.0"
+                android:textColor="#8C9197" />
+
+            <TextView
+                android:id="@+id/download_period"
+                style="@style/Footnote"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:text="Mb/s"
+                android:textColor="#8C9197"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
+        <!-- Горячая кнопка Split Tunneling: показывает текущий статус
+             (выкл / N приложений) и по тапу открывает раздел туннелирования -->
+        <LinearLayout
+            android:id="@+id/btnSplitTunnel"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/shape_stadium"
+            android:backgroundTint="#262B33"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="10dp">
+
+            <ImageView
+                android:id="@+id/splitTunnelIcon"
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_split_tunnel"
+                android:tint="#8C9197" />
+
+            <TextView
+                android:id="@+id/tvSplitTunnelStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:fontFamily="@font/play"
+                android:text="@string/split_tunnel_quick_off"
+                android:textColor="#8C9197"
+                android:textSize="13sp" />
+
+            <ImageView
+                android:layout_width="14dp"
+                android:layout_height="14dp"
+                android:layout_marginStart="6dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_chevron_right"
+                android:tint="#8C9197" />
+
+        </LinearLayout>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <FrameLayout
+            android:id="@+id/btnConnect"
+            android:layout_width="190dp"
+            android:layout_height="190dp"
+            android:background="@drawable/bg_button_inactive"
+            >
+
+            <LinearLayout
+                android:id="@+id/connect_info"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:layout_gravity="center"
+                >
+
+                <ImageView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_power" />
+
+                <TextView
+                    android:id="@+id/tvState"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Connected" />
+            </LinearLayout>
+            
+            <ProgressBar
+                android:id="@+id/connection_progress"
+                android:layout_width="150dp"
+                android:layout_height="150dp"
+                android:layout_gravity="center"
+                android:visibility="gone"
+                tools:visibility="visible"
+                android:indeterminateTint="@color/blue"
+                android:indeterminateTintMode="src_in"
+                />
+
+
+        </FrameLayout>
+
+        <LinearLayout
+            android:id="@+id/protocol_selector"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginHorizontal="16dp"
+            android:layout_marginTop="24dp"
+            android:background="@drawable/shape_stadium"
+            android:backgroundTint="#262B33"
+            android:orientation="horizontal"
+            android:padding="4dp"
+            android:weightSum="4">
+
+            <TextView
+                android:id="@+id/btn_gw"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@drawable/shape_stadium"
+                android:backgroundTint="#3F4652"
+                android:fontFamily="@font/play_bold"
+                android:gravity="center"
+                android:maxLines="1"
+                android:text="GW"
+                android:textColor="@color/white"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btn_vless"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@null"
+                android:drawableStart="@drawable/ic_vless"
+                android:drawablePadding="4dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:fontFamily="@font/play_bold"
+                android:gravity="center"
+                android:maxLines="1"
+                android:text="VLESS"
+                android:textColor="#8C9197"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/btn_awg"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@null"
+                android:drawableStart="@drawable/ic_awg"
+                android:drawablePadding="4dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:fontFamily="@font/play_bold"
+                android:gravity="center"
+                android:maxLines="1"
+                android:text="AWG"
+                android:textColor="#8C9197"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/btn_ipv4"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@null"
+                android:drawableStart="@drawable/ic_ikev2"
+                android:drawablePadding="4dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:fontFamily="@font/play_bold"
+                android:gravity="center"
+                android:maxLines="1"
+                android:text="IKEv2"
+                android:textColor="#8C9197"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnServers"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginHorizontal="16dp"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/shape_stadium"
+            android:backgroundTint="#1B1E24"
+            android:gravity="center_vertical"
+            android:paddingHorizontal="12dp">
+
+            <ImageView
+                android:id="@+id/connection_location"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:src="@drawable/ic_globe" />
+
+            <TextView
+                android:id="@+id/connection_title"
+                style="@style/Body.Semibold"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_weight="1"
+                android:text="@string/auto_choice" />
+
+            <TextView
+                android:id="@+id/connection_ping"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:fontFamily="@font/play"
+                android:text="64 ms"
+                android:textSize="13sp" />
+
+            <ImageView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/shape_circle"
+                android:backgroundTint="#262B33"
+                android:padding="4dp"
+                android:src="@drawable/ic_chevron_right" />
+
+
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tv_protocol_hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="16dp"
+            android:layout_marginBottom="24dp"
+            android:text="@string/protocol_hint_text"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:gravity="center" />
+
+    </LinearLayout>
+
+</FrameLayout>

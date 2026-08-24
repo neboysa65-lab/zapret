@@ -1,0 +1,62 @@
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:animateLayoutChanges="false"
+    android:background="@color/colorPrimary"
+    android:padding="@dimen/padding_common">
+
+    <androidx.coordinatorlayout.widget.CoordinatorLayout
+        android:id="@+id/coordinator"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_alignBottom="@+id/input_code"
+        android:layout_marginBottom="-100dp" />
+
+    <com.witvpn.ikev2.presentation.widget.AuthToolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:atb_left="@drawable/ic_delete"
+        app:atb_title="@string/confirm_code" />
+
+    <TextView
+        android:id="@+id/label_description"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/toolbar"
+        android:layout_marginTop="5dp"
+        android:layout_marginBottom="22dp"
+        android:fontFamily="@font/campton_book"
+        android:text="@string/confirm_code_description"
+        android:textColor="#80FFFFFF" />
+
+    <com.witvpn.ikev2.presentation.widget.InputCodeGroup
+        android:id="@+id/input_code"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/height_input_code"
+        android:layout_below="@+id/label_description" />
+
+    <ProgressBar
+        android:id="@+id/loading"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerInParent="true"
+        android:visibility="gone"
+        tools:visibility="visible" />
+
+    <TextView
+        android:id="@+id/tv_resend_code"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginBottom="20dp"
+        android:fontFamily="@font/campton_bold"
+        android:letterSpacing="0.2"
+        android:text="@string/resend_code"
+        android:textAllCaps="true"
+        android:textColor="#fec600"
+        android:textSize="13sp" />
+</RelativeLayout>

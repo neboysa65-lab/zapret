@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:layout_height="wrap_content"
+              android:layout_width="match_parent"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:orientation="vertical"
+              android:padding="28dp"
+              android:background="@drawable/bg_action_button_2"
+              xmlns:android="http://schemas.android.com/apk/res/android">
+    <ImageView
+            android:id="@+id/close"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            app:srcCompat="@drawable/ic_delete" />
+    <ImageView android:layout_width="86dp"
+               android:layout_height="86dp"
+               android:layout_gravity="center"
+               app:srcCompat="@drawable/ic_warning" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+              android:paddingTop="32dp"
+              android:fontFamily="@font/campton_bold"
+              android:textSize="24sp"
+              android:gravity="center"
+              android:text="Лимит исчерпан" />
+    <TextView android:layout_width="wrap_content"
+              android:layout_height="wrap_content"
+              android:layout_gravity="center"
+              android:minWidth="150dp"
+              android:maxWidth="300dp"
+              android:paddingVertical="28dp"
+              android:gravity="center"
+              android:textColor="#80FFFFFF"
+              android:fontFamily="@font/campton_book"
+              android:text="Ваш дневной лимит (80 минут) исчерпан, активируйте Премиум, чтобы пользоваться более быстрыми серверами без ограничений по времени" />
+    <TextView
+            android:id="@+id/action_button"
+            style="@style/ActionButton"
+            android:layout_width="300dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:textColor="#ffffff"
+            android:textAllCaps="false"
+            android:text="Активировать премиум" />
+</LinearLayout>

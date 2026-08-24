@@ -1,0 +1,50 @@
+stages:
+  - build
+
+buildAssembleDebug:
+    rules:
+      - if: ($CI_COMMIT_BRANCH == "release" || $CI_COMMIT_BRANCH == "beta-release")
+        when: manual
+      - when: always
+    stage: build
+    script: 
+        - apt install curl -y
+        - curl -s https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer | bash
+        - mkdir /builds/greywebs-vpn/android/GreyWebs-VPN-Android/app/secure_files
+        - cp .secure_files/keyvpn.jks /builds/greywebs-vpn/android/GreyWebs-VPN-Android/app/secure_files/keyvpn.jks
+        - chmod +x gradlew && ./gradlew -PgreywebsMavenUser=$greywebsMavenUser -PgreywebsMavenPassword=$greywebsMavenPassword app:assembleDebug
+    artifacts:
+      paths:
+        - app/build/outputs/apk/debug/*.apk
+
+buildAssembleRelease:
+  rules:
+    - if: ($CI_COMMIT_BRANCH == "release" || $CI_COMMIT_BRANCH == "beta-release")
+      when: always
+    - when: never
+  stage: build
+  script:
+        - apt install curl -y
+        - curl -s https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer | bash
+        - mkdir /builds/greywebs-vpn/android/GreyWebs-VPN-Android/app/secure_files
+        - cp .secure_files/keyvpn.jks /builds/greywebs-vpn/android/GreyWebs-VPN-Android/app/secure_files/keyvpn.jks
+        - chmod +x gradlew && ./gradlew -PgreywebsMavenUser=$greywebsMavenUser -PgreywebsMavenPassword=$greywebsMavenPassword app:assembleRelease
+  artifacts:
+    paths:
+      - app/build/outputs/apk/release/*.apk
+
+buildBundleRelease:
+  rules:
+    - if: ($CI_COMMIT_BRANCH == "release" || $CI_COMMIT_BRANCH == "beta-release")
+      when: always
+    - when: never
+  stage: build
+  script:
+        - apt install curl -y
+        - curl -s https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer | bash
+        - mkdir /builds/greywebs-vpn/android/GreyWebs-VPN-Android/app/secure_files
+        - cp .secure_files/keyvpn.jks /builds/greywebs-vpn/android/GreyWebs-VPN-Android/app/secure_files/keyvpn.jks
+        - chmod +x gradlew && ./gradlew -PgreywebsMavenUser=$greywebsMavenUser -PgreywebsMavenPassword=$greywebsMavenPassword app:bundleRelease
+  artifacts:
+    paths:
+      - app/build/outputs/bundle/release/*.aab

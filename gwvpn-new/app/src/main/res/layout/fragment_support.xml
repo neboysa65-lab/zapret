@@ -1,0 +1,260 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1B1E24">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/img_globe_blur"
+        android:orientation="vertical"
+        android:paddingHorizontal="16dp">
+
+        <TextView
+            style="@style/Title.1"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/support_title" />
+
+        <TextView
+            style="@style/Subhead"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="#8C9197"
+            android:text="@string/support_subtitle" />
+
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:id="@+id/update_card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:background="@drawable/shape_rect_c32"
+            android:backgroundTint="#1B1E24"
+            android:padding="16dp">
+
+            <ImageView
+                android:id="@+id/update_icon"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/shape_circle"
+                android:backgroundTint="#474859"
+                android:padding="8dp"
+                android:src="@drawable/ic_logo_update"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <TextView
+                android:id="@+id/update_title"
+                style="@style/Callout"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="12dp"
+                android:text="@string/support_updated_title"
+                android:textStyle="bold"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toEndOf="@+id/update_icon"
+                app:layout_constraintTop_toTopOf="@+id/update_icon" />
+
+            <TextView
+                android:id="@+id/update_subtitle"
+                style="@style/Caption.1"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="12dp"
+                android:layout_marginTop="4dp"
+                android:text="@string/support_updated_subtitle"
+                android:textColor="#8C9197"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toEndOf="@+id/update_icon"
+                app:layout_constraintTop_toBottomOf="@+id/update_title" />
+
+        </androidx.constraintlayout.widget.ConstraintLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/shape_rectangle_r24"
+            android:backgroundTint="#1B1E24"
+            android:orientation="vertical"
+            android:paddingVertical="16dp">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="16dp">
+
+                <View
+                    android:id="@+id/liveIndicator"
+                    android:layout_width="10dp"
+                    android:layout_height="10dp"
+                    android:background="@drawable/indicator_live_green" />
+
+                <TextView
+                    style="@style/Callout"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/support_notice_title"
+                    android:textSize="17.6sp"
+                    android:textStyle="bold" />
+
+            </LinearLayout>
+
+            <TextView
+                style="@style/Caption.1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:lineSpacingExtra="4dp"
+                android:paddingHorizontal="16dp"
+                android:text="@string/support_notice_text"
+                android:textSize="14.3sp"
+                android:textColor="#8C9197" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/shape_rectangle_r24"
+            android:backgroundTint="#1B1E24"
+            android:orientation="vertical"
+            android:paddingVertical="12dp">
+
+            <androidx.constraintlayout.widget.ConstraintLayout
+                android:id="@+id/telegram_support"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="12dp">
+
+                <ImageView
+                    android:id="@+id/tg_icon"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="@drawable/shape_circle"
+                    android:backgroundTint="#474859"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_circle_tg"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toTopOf="parent" />
+
+                <TextView
+                    android:id="@+id/tg_title"
+                    style="@style/Callout"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="12dp"
+                    android:text="@string/support_contact_title"
+                    android:textStyle="bold"
+                    app:layout_constraintEnd_toStartOf="@+id/tg_chevron"
+                    app:layout_constraintStart_toEndOf="@+id/tg_icon"
+                    app:layout_constraintTop_toTopOf="@+id/tg_icon" />
+
+                <TextView
+                    android:id="@+id/tg_subtitle"
+                    style="@style/Caption.1"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="12dp"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/support_contact_subtitle"
+                    android:textColor="#8C9197"
+                    app:layout_constraintEnd_toStartOf="@+id/tg_chevron"
+                    app:layout_constraintStart_toEndOf="@+id/tg_icon"
+                    app:layout_constraintTop_toBottomOf="@+id/tg_title" />
+
+                <ImageView
+                    android:id="@+id/tg_chevron"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_chevron_right"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintEnd_toEndOf="parent"
+                    app:layout_constraintTop_toTopOf="parent" />
+
+            </androidx.constraintlayout.widget.ConstraintLayout>
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/shape_rectangle_r24"
+            android:backgroundTint="#1B1E24"
+            android:orientation="vertical"
+            android:paddingVertical="12dp">
+
+            <androidx.constraintlayout.widget.ConstraintLayout
+                android:id="@+id/telegram_channel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="12dp">
+
+                <ImageView
+                    android:id="@+id/tg_channel_icon"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="@drawable/shape_circle"
+                    android:backgroundTint="#474859"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_circle_tg"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toTopOf="parent" />
+
+                <TextView
+                    android:id="@+id/tg_channel_title"
+                    style="@style/Callout"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="12dp"
+                    android:text="@string/support_channel_title"
+                    android:textStyle="bold"
+                    app:layout_constraintEnd_toStartOf="@+id/tg_channel_chevron"
+                    app:layout_constraintStart_toEndOf="@+id/tg_channel_icon"
+                    app:layout_constraintTop_toTopOf="@+id/tg_channel_icon" />
+
+                <TextView
+                    android:id="@+id/tg_channel_subtitle"
+                    style="@style/Caption.1"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="12dp"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/support_channel_subtitle"
+                    android:textColor="#8C9197"
+                    app:layout_constraintEnd_toStartOf="@+id/tg_channel_chevron"
+                    app:layout_constraintStart_toEndOf="@+id/tg_channel_icon"
+                    app:layout_constraintTop_toBottomOf="@+id/tg_channel_title" />
+
+                <ImageView
+                    android:id="@+id/tg_channel_chevron"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_chevron_right"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintEnd_toEndOf="parent"
+                    app:layout_constraintTop_toTopOf="parent" />
+
+            </androidx.constraintlayout.widget.ConstraintLayout>
+
+        </LinearLayout>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+    </LinearLayout>
+
+</FrameLayout>

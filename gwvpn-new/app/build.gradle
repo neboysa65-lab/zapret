@@ -1,0 +1,212 @@
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+    id 'kotlin-kapt'
+    id 'com.google.dagger.hilt.android'
+    id 'androidx.navigation.safeargs.kotlin'
+    id 'com.google.gms.google-services'
+    id 'com.google.firebase.crashlytics'
+    id 'com.github.triplet.play' version '3.8.4'
+    // CAS.AI mediation — must be applied after 'com.android.application'
+    id 'com.cleveradssolutions.gradle-plugin' version '4.8.0-beta1'
+}
+
+cas {
+    // Ad networks certified for VPN/proxy traffic policies.
+    includeVPNCompliantAds = true
+    useAdvertisingId = true
+
+    // Extra mediation adapters on top of the VPN-compliant solution.
+    adapters {
+        // MonetriX — CAS 4.8+ ships an alternative MonetriX SDK for VPN apps.
+        monetrix = true
+        // Display IO (closed beta) — requires the maven.display.io repository
+        // (see root build.gradle) and network activation by the CAS account manager.
+        displayIO = true
+    }
+}
+
+android {
+    compileSdk 35
+    ndkVersion "27.0.12077973"
+
+    defaultConfig {
+        applicationId "app.greywebs.vpn"
+        minSdk 24
+        targetSdk 35
+        versionCode 278
+        versionName "3.0.8"
+
+        archivesBaseName = "GreyWebVPN-$versionName [$versionCode]"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        resValue("string", "base_url", "https://api-gwvpn-app.vpnhub.xyz/vpn/api/v1/")
+
+        // Ссылка-подписка (subscription) со списком vless/hysteria2 нод.
+        // Как и base_url — это лишь ДЕФОЛТ; актуальное значение приходит из
+        // Firebase Remote Config (ключ subscription_url) и может быть заменено
+        // из консоли Firebase без выпуска обновления в Google Play.
+        resValue("string", "subscription_url", "https://sub.gw-vpn.click/jzp2_Fc1rqXDrBu1")
+
+        // CAS.AI application identifier from the CAS dashboard.
+        buildConfigField("String", "CAS_ID", '"app.greywebs.vpn"')
+
+        buildConfigField("String", "GRAYS_BILLING_URL", '"https://api-gwvpn-app.vpnhub.xyz/vpn/client/payment/new?userId=%s"')
+        buildConfigField("boolean", "CHECK_IN_APP_UPDATES", "true")
+        buildConfigField("boolean", "CONNECTION_TIME_LIMIT_FOR_FREE", "false")
+        buildConfigField("long", "CONNECTION_TIME_LIMIT_MINUTES", "120")
+
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
+        }
+    }
+
+    signingConfigs {
+        release {
+            storeFile = file(System.getenv("ANDROID_KEY_STOREFILE").toString())
+            storePassword System.getenv("SIGNING_PASSWORD")
+            keyAlias System.getenv("SIGNING_KEY_ALIAS")
+            keyPassword System.getenv("SIGNING_PASSWORD")
+        }
+    }
+
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            // Обфускация R8 включена; правила в proguard-rules.pro переименовывают
+            // ТОЛЬКО пакет протокола GW (com.witvpn.gw.**), остальной код не трогается
+            // (-dontshrink / -dontoptimize / глобальный -keep).
+            minifyEnabled true
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                'proguard-rules.pro',
+                'proguard-keep-others.pro'
+        }
+        debug {
+            buildConfigField("boolean", "CHECK_IN_APP_UPDATES", "false")
+            //signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+
+
+    }
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+
+    sourceSets {
+        main.res.srcDirs = ['src/main/res', 'src/main/resFlags', 'src/main/resIKEV2']
+    }
+    namespace 'com.witvpn.ikev2'
+
+    packagingOptions {
+        jniLibs {
+            keepDebugSymbols += ['**/*.so']
+        }
+    }
+}
+
+play{
+    serviceAccountCredentials.set(file("your-key.json"))
+}
+
+ext.retrofit_version = "2.4.0"
+ext.okhttp_version = "4.12.0"
+ext.gson_version = "2.9.0"
+ext.retrofitVersion = '2.11.0'
+
+dependencies {
+    coreLibraryDesugaring libs.desugarJdkLibs
+
+    implementation 'com.github.bumptech.glide:glide:4.13.2'
+    kapt 'com.github.bumptech.glide:compiler:4.13.2'
+
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+    implementation 'androidx.core:core-ktx:1.9.0'
+    implementation 'androidx.appcompat:appcompat:1.5.1'
+    implementation 'com.google.android.material:material:1.7.0'
+    implementation 'androidx.preference:preference-ktx:1.2.0'
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    //#Navigation
+    implementation 'androidx.navigation:navigation-fragment-ktx:2.5.3'
+    implementation 'androidx.navigation:navigation-ui-ktx:2.5.3'
+
+    //#LiveData
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.5.1"
+    implementation "androidx.lifecycle:lifecycle-common-java8:2.5.1"
+    implementation 'androidx.lifecycle:lifecycle-livedata-ktx:2.5.1'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.5.1'
+
+    //#Hilt
+    implementation "com.google.dagger:hilt-android:$hilt_version"
+    kapt "com.google.dagger:hilt-android-compiler:$hilt_version"
+
+    //#Ads
+    //implementation 'com.google.android.gms:play-services-ads:20.0.0'
+
+    //#Force up lib version using in com.google.android.gms:play-services-ads-lite
+    implementation "androidx.work:work-runtime:2.7.1"
+
+    //#Networking
+    implementation "com.google.code.gson:gson:$gson_version"
+    implementation "com.squareup.okhttp3:okhttp:$okhttp_version"
+    implementation "com.squareup.okhttp3:logging-interceptor:$okhttp_version"
+    implementation "com.squareup.retrofit2:retrofit:$retrofitVersion"
+    implementation "com.squareup.retrofit2:converter-gson:$retrofitVersion"
+
+    //#Common
+    implementation 'com.jakewharton.timber:timber:5.0.1'
+    implementation 'com.github.PhilJay:MPAndroidChart:v3.1.0'
+    implementation 'com.airbnb.android:lottie:5.2.0'
+
+    //#Crypto 1.2
+    implementation("ru.zoommax:HexUtilsLib:1.1")
+    implementation("org.web3j:crypto:5.0.0") {
+        exclude group: 'org.bouncycastle'
+    }
+    implementation files("libs/Crypto-1.2.jar")
+
+    //#GW protocol
+    implementation project(':gw-tunnel')
+
+    //QR
+    implementation("io.github.g0dkar:qrcode-kotlin-android:3.3.0")
+
+    //In app review
+    implementation 'com.google.android.play:review-ktx:2.0.1'
+
+    //#In app updates
+    implementation 'com.google.android.play:app-update-ktx:2.1.0'
+
+    //#Firebase
+    implementation platform('com.google.firebase:firebase-bom:32.7.4')
+    implementation 'com.google.firebase:firebase-crashlytics'
+    implementation 'com.google.firebase:firebase-analytics'
+    implementation 'com.google.firebase:firebase-messaging'
+    // Remote Config — динамическое обновление доменов (base_url / payment_url)
+    // без выпуска нового билда в Google Play.
+    implementation 'com.google.firebase:firebase-config-ktx'
+
+    // Ads — CAS.AI mediation. The SDK and network adapters are contributed by the
+    // 'com.cleveradssolutions.gradle-plugin' plugin via the cas { } block above.
+
+    implementation 'com.android.billingclient:billing:6.2.0'
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+
+    // Vyom xray SDK (replaces old libv2ray.aar with 16KB page-aligned libraries)
+    implementation project(':vyom-tun-sdk')
+    implementation project(':amneziawg-tunnel')
+}

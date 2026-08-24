@@ -1,0 +1,54 @@
+plugins {
+    id 'com.android.library'
+    id 'kotlin-android'
+}
+
+def pkg = providers.gradleProperty("amneziawgPackageName").get()
+def cmakeAndroidPackageName = providers.environmentVariable("ANDROID_PACKAGE_NAME").getOrElse(pkg)
+
+
+android {
+    compileSdk 35
+    ndkVersion "27.0.12077973"
+    namespace "org.amnezia.awg.tunnel"
+    
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        minSdk 24
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+    
+    testOptions.unitTests.all {
+        testLogging { events "passed", "skipped", "failed" }
+    }
+    
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+    lint {
+        disable "LongLogTag", "NewApi"
+    }
+}
+
+dependencies {
+    coreLibraryDesugaring libs.desugarJdkLibs
+    implementation libs.androidx.annotation
+    implementation libs.androidx.collection
+    compileOnly libs.jsr305
+    testImplementation libs.junit
+}

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:layout_height="wrap_content"
+              android:layout_width="match_parent"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:orientation="vertical"
+              android:padding="24dp"
+              android:background="@drawable/bg_action_button_2"
+              xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView
+            android:id="@+id/anonimus"
+            style="@style/ActionButton"
+            android:layout_width="300dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:textColor="#ffffff"
+            android:textAllCaps="false"
+            android:layout_marginBottom="10dp"
+            android:text="Новый аккаунт" />
+
+    <TextView
+            android:id="@+id/restore"
+            style="@style/ActionButton"
+            android:layout_width="300dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:textColor="#ffffff"
+            android:textAllCaps="false"
+            android:text="Ввести ключ фразу" />
+</LinearLayout>

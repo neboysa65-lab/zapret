@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Title"/>
+    <style name="Title.Large">
+        <item name="android:fontFamily">@font/play</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">34sp</item>
+        <item name="android:textColor">@color/white</item>
+    </style>
+    <style name="Title.1">
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">28sp</item>
+        <item name="android:textColor">@color/white</item>
+    </style>
+    <style name="Title.3">
+        <item name="android:fontFamily">@font/play</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">20sp</item>
+        <item name="android:textColor">@color/white</item>
+    </style>
+    <style name="Subhead">
+        <item name="android:textStyle">normal</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">#8C9197</item>
+    </style>
+    <style name="Subhead.Semibold">
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="Callout">
+        <item name="android:fontFamily">@font/play</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textColor">@color/white</item>
+    </style>
+    <style name="Body">
+        <item name="android:textStyle">normal</item>
+        <item name="android:textSize">17sp</item>
+    </style>
+    <style name="BodyPlay">
+        <item name="android:fontFamily">@font/play</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">17sp</item>
+    </style>
+    <style name="Body.Semibold">
+        <item name="android:fontFamily">@font/play</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="Footnote">
+<!--        <item name="android:fontFamily">@font/play</item>-->
+        <item name="android:textStyle">normal</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textColor">@color/blue</item>
+    </style>
+    <style name="Caption"/>
+    <style name="Caption.1">
+<!--        <item name="android:fontFamily">@font/play</item>--><!--todo inter-->
+        <item name="android:textStyle">normal</item>
+        <item name="fontWeight">500</item>
+        <item name="android:textSize">12sp</item>
+    </style>
+    <style name="Decorative">
+        <item name="android:fontFamily">@font/play</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">44sp</item>
+    </style>
+    <style name="BottomNavTitle">
+        <item name="android:fontFamily">@font/play</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textSize">12sp</item>
+    </style>
+
+</resources>
