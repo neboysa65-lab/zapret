@@ -1,5 +1,6 @@
 package com.witvpn.gw.socks
 
+import android.util.Log
 import com.witvpn.gw.ssh.GwSshTransport
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -20,6 +21,7 @@ class GwSocksServer(
     private val dnsOverTcp: Boolean = true,
 ) {
     companion object {
+        private const val TAG = "GwSocks"
         private const val VERSION = 0x05
         private const val CMD_CONNECT = 0x01
         private const val CMD_UDP_ASSOCIATE = 0x03
@@ -107,10 +109,12 @@ class GwSocksServer(
     private fun handleConnect(socket: Socket, input: DataInputStream, output: DataOutputStream) {
         readSkipReserved(input)
         val target = readAddress(input) ?: return replyAndClose(output, GENERAL_FAILURE, socket)
+        Log.d(TAG, "CONNECT ${target.first}:${target.second}")
 
         val channel = try {
             transport.openChannel(target.first, target.second)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "CONNECT ${target.first}:${target.second} channel failed: $e")
             return replyAndClose(output, GENERAL_FAILURE, socket)
         }
 
@@ -173,7 +177,15 @@ class GwSocksServer(
                 }
 
                 val datagram = parseUdpDatagram(packet) ?: continue
-                val response = relayUdp(datagram) ?: continue
+                val response = relayUdp(datagram)
+                if (response == null) {
+                    Log.w(
+                        TAG,
+                        "UDP ${datagram.dstHost.hostAddress}:${datagram.dstPort} " +
+                            "len=${datagram.payload.size} no relay path"
+                    )
+                    continue
+                }
                 val out = DatagramPacket(response, response.size, packet.socketAddress)
                 runCatching { udp.send(out) }
             }
@@ -230,7 +242,8 @@ class GwSocksServer(
     private fun resolveDnsOverTcp(host: String, query: ByteArray): ByteArray? {
         val channel = try {
             transport.openChannel(host, DNS_PORT)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "DNS-TCP $host channel failed: $e")
             return null
         }
         try {
@@ -242,7 +255,10 @@ class GwSocksServer(
 
             val lenHi = chIn.read()
             val lenLo = chIn.read()
-            if (lenHi < 0 || lenLo < 0) return null
+            if (lenHi < 0 || lenLo < 0) {
+                Log.w(TAG, "DNS-TCP $host closed before response")
+                return null
+            }
             val respLen = (lenHi shl 8) or lenLo
             if (respLen <= 0 || respLen > 65535) return null
             val response = ByteArray(respLen)

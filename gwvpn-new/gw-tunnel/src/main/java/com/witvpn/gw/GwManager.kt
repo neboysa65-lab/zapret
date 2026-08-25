@@ -151,18 +151,20 @@ object GwManager {
 
     fun tunYamlFile(context: Context, socksPort: Int): File {
         val file = File(context.filesDir, "gw_tun.yaml")
+        val hevLog = File(context.filesDir, "gw_hev.log")
+        // Schema per hev-socks5-tunnel: tunnel.mtu, socks5.*, misc.*. Unknown
+        // sections (tcp/udp/dns) are silently ignored by its parser.
         file.writeText(
             """
+            tunnel:
+              mtu: 8500
             socks5:
               address: 127.0.0.1
               port: $socksPort
-              udp: udp
-            tcp:
-              enabled: true
-            udp:
-              enabled: true
-            dns:
-              enabled: true
+              udp: 'udp'
+            misc:
+              log-level: debug
+              log-file: '$hevLog.absolutePath'
             """.trimIndent()
         )
         return file
