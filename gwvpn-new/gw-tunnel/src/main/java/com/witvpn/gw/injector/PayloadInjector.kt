@@ -103,29 +103,16 @@ object PayloadInjector {
     }
 
     /**
-     * Двухступенчатая стратегия: 1) авторский payload (нужен на сетях с DPI/
-     * транспроксей ISP); 2) если CDN отверг и закрыл — чистый WebSocket-upgrade.
+     * Только авторский payload — никакого чистого WebSocket-upgrade фолбэка:
+     * открытый upgrade выдаёт туннель DPI-наблюдателю и обесценивает обфускацию.
      */
     private fun connectAndInject(
         config: GwServerConfig,
         protect: ((Socket) -> Unit)?,
         viaProxy: Boolean,
     ): Socket {
-        val userPayload = config.payload.ifBlank { GwServerConfig.defaultPayload() }
-        val fallbackPayload = GwServerConfig.defaultPayload()
-
-        try {
-            return attemptInject(config, protect, viaProxy, userPayload)
-        } catch (first: Exception) {
-            if (userPayload.trim() == fallbackPayload.trim()) throw first
-            Log.w(TAG, "GW payload attempt failed (${first.message}); retrying with clean WebSocket upgrade")
-            try {
-                return attemptInject(config, protect, viaProxy, fallbackPayload)
-            } catch (second: Exception) {
-                Log.w(TAG, "GW clean-upgrade fallback also failed: ${second.message}")
-                throw first
-            }
-        }
+        val payload = config.payload.ifBlank { GwServerConfig.defaultPayload() }
+        return attemptInject(config, protect, viaProxy, payload)
     }
 
     private fun attemptInject(
