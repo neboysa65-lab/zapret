@@ -114,7 +114,11 @@ class GwSocksServer(
 
     private fun handleConnect(socket: Socket, input: DataInputStream, output: DataOutputStream) {
         readSkipReserved(input)
-        val target = readAddress(input) ?: return replyAndClose(output, GENERAL_FAILURE, socket)
+        val target = readAddress(input)
+        if (target == null) {
+            Log.w(TAG, "CONNECT with unparsable address from ${socket.remoteSocketAddress}")
+            return replyAndClose(output, GENERAL_FAILURE, socket)
+        }
         Log.d(TAG, "CONNECT ${target.first}:${target.second}")
 
         val channel = try {
@@ -294,8 +298,8 @@ class GwSocksServer(
         return out.toByteArray()
     }
 
+    /** Consumes the single RSV byte between CMD and ATYP. */
     private fun readSkipReserved(input: DataInputStream) {
-        input.readByte()
         input.readByte()
     }
 
