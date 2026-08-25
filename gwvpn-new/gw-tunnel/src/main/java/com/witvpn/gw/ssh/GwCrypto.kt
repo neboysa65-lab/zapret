@@ -32,7 +32,7 @@ object GwCrypto {
         val position = Security.insertProviderAt(full, 1)
         Log.i(
             TAG,
-            "full BouncyCastle ${full.information} installed at position $position" +
+            "full BouncyCastle ${full.name} ${full.versionStr} installed at position $position" +
                 if (position == -1) " (FAILED)" else ""
         )
         initialized = true
