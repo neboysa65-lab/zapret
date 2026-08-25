@@ -164,7 +164,7 @@ object GwManager {
               udp: 'udp'
             misc:
               log-level: debug
-              log-file: '$hevLog.absolutePath'
+              log-file: '${hevLog.absolutePath}'
             """.trimIndent()
         )
         return file

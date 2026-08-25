@@ -51,10 +51,12 @@ class GwSocksServer(
         val ss = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
         serverSocket = ss
         port = ss.localPort
+        Log.i(TAG, "listening on 127.0.0.1:$port")
         Thread({
             while (!ss.isClosed) {
                 try {
                     val client = ss.accept()
+                    Log.d(TAG, "accepted ${client.remoteSocketAddress}")
                     executor.execute { handleClient(client) }
                 } catch (_: IOException) {
                     break
@@ -75,7 +77,10 @@ class GwSocksServer(
             val input = DataInputStream(socket.getInputStream())
             val output = DataOutputStream(socket.getOutputStream())
 
-            if (input.readByte() != VERSION.toByte()) return closeQuietly(socket)
+            if (input.readByte() != VERSION.toByte()) {
+                Log.w(TAG, "bad socks version from ${socket.remoteSocketAddress}")
+                return closeQuietly(socket)
+            }
             val nMethods = input.readByte().toInt() and 0xFF
             var chosen = -1
             repeat(nMethods) {
@@ -83,6 +88,7 @@ class GwSocksServer(
                 if (m == 0x00 && chosen == -1) chosen = m
             }
             if (chosen != 0x00) {
+                Log.w(TAG, "no acceptable auth method from ${socket.remoteSocketAddress}")
                 output.write(byteArrayOf(VERSION.toByte(), 0xFF.toByte()))
                 output.flush()
                 return closeQuietly(socket)
