@@ -254,9 +254,11 @@ class GwSocksServer(
         if (dnsOverTcp && dgram.dstPort == DNS_PORT && dgram.payload.isNotEmpty()) {
             // Bounded: an unresponsive remote resolver must not pin this UDP
             // control session forever with a blocked channel read.
-            val future = dnsExecutor.submit {
-                resolveDnsOverTcp(dgram.dstHost.hostAddress ?: "8.8.8.8", dgram.payload)
-            }
+            val future = dnsExecutor.submit(
+                java.util.concurrent.Callable<ByteArray?> {
+                    resolveDnsOverTcp(dgram.dstHost.hostAddress ?: "8.8.8.8", dgram.payload)
+                }
+            )
             return try {
                 future.get(DNS_TCP_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
             } catch (e: Exception) {
