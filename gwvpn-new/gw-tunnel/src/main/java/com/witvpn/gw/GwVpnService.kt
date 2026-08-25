@@ -89,6 +89,17 @@ class GwVpnService : TProxyService() {
                 try {
                     teardownTunnel()
 
+                    // Fail fast and loudly: without libhev-socks5-tunnel.so the
+                    // tun device would be established and then nothing would
+                    // forward its packets, which looks exactly like "connected
+                    // but no internet". Check before spending four SSH retries.
+                    if (!TProxyService.isTProxyLoaded) {
+                        throw IllegalStateException(
+                            "tun2socks native library unavailable: " +
+                                (TProxyService.tproxyLoadError ?: "libhev-socks5-tunnel.so not loaded")
+                        )
+                    }
+
                     var ssh: GwSshTransport? = null
                     var lastError: Exception? = null
                     for (attempt in 1..MAX_CONNECT_ATTEMPTS) {
@@ -127,10 +138,15 @@ class GwVpnService : TProxyService() {
                     startStatsTimer()
                     GwManager.setState(GwManager.State.CONNECTED)
                     GwManager.selectedServer?.let { GwManager.notifyConnected(it) }
-                } catch (e: Exception) {
-                    Log.e(TAG, "GW tunnel failed", e)
+                } catch (t: Throwable) {
+                    // Throwable, not Exception: a missing/mismatched .so raises
+                    // UnsatisfiedLinkError, which is an Error. Catching only
+                    // Exception let it kill this thread silently — no log line
+                    // and no state transition, so the UI span forever on
+                    // CONNECTING. That was the actual GW "no logs" bug.
+                    Log.e(TAG, "GW tunnel failed", t)
                     teardownTunnel()
-                    val userError = if (stopRequested) null else (e.message ?: "connection error")
+                    val userError = if (stopRequested) null else (t.message ?: "connection error")
                     GwManager.setState(GwManager.State.DISCONNECTED, userError)
                 }
             }
@@ -206,7 +222,7 @@ class GwVpnService : TProxyService() {
                 if (stats.size >= 4) {
                     GwManager.updateTraffic(up = stats[1], down = stats[3])
                 }
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
             } finally {
                 lifecycleLock.unlock()
             }
