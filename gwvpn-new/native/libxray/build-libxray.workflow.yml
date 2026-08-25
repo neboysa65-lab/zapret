@@ -1,0 +1,125 @@
+# NOTE: this file must live at the REPOSITORY ROOT as
+#   .github/workflows/build-libxray.yml
+# to be runnable. It is parked here because the GitHub App used to commit it
+# cannot write under .github/workflows (that path needs the dedicated
+# "workflows" permission). Move it with:
+#
+#   mkdir -p .github/workflows
+#   git mv gwvpn-new/native/libxray/build-libxray.workflow.yml \
+#          .github/workflows/build-libxray.yml
+#   git commit -m "ci(xray): activate libxray build workflow" && git push
+#
+# (Note the workflows already in gwvpn-new/.github/workflows/ are inactive for
+# the same root-path reason.)
+
+name: Build libxray.so (Xray-core)
+
+# Rebuilds the Xray engine that vyom-tun-sdk ships as a prebuilt .so.
+#
+# The binary previously in vyom-tun-sdk/src/main/jniLibs was an untagged
+# xray-core "(devel)" build with no source in this repo, so it could neither be
+# audited nor updated. native/libxray now holds that source, pinned to an
+# upstream release tag, and this workflow reproduces the three ABIs the app
+# ships (see the app module's abiFilters).
+#
+# Run it from the Actions tab (workflow_dispatch), download the
+# "libxray-jniLibs" artifact, and drop its contents into
+# gwvpn-new/vyom-tun-sdk/src/main/jniLibs/. The CMake target in
+# vyom-tun-sdk/src/main/cpp links libvyom-v2ray.so against these at build time,
+# so nothing else needs changing.
+#
+# Verify before shipping: connect a VLESS/REALITY node and confirm traffic
+# actually flows. This workflow proves the library builds, not that a given
+# server interoperates.
+
+on:
+  workflow_dispatch:
+    inputs:
+      xray_version:
+        description: 'xray-core Go module version (release v26.3.27 == module v1.260327.0)'
+        required: true
+        default: 'v1.260327.0'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gwvpn-new/native/libxray
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Matches the toolchain the previously shipped binary was built with.
+          go-version: '1.26.1'
+          cache-dependency-path: gwvpn-new/native/libxray/go.sum
+
+      - name: Set up Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          # Same NDK major the Gradle modules declare (ndkVersion 27.x).
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Pin xray-core version
+        if: inputs.xray_version != ''
+        run: |
+          go get github.com/xtls/xray-core@${{ inputs.xray_version }}
+          go mod tidy
+
+      - name: Build all ABIs
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # minSdk 24, matching the Gradle modules.
+          build() {
+            local abi="$1" goarch="$2" cc="$3" goarm="${4:-}"
+            echo "::group::$abi"
+            mkdir -p "out/$abi"
+            env CGO_ENABLED=1 GOOS=android GOARCH="$goarch" ${goarm:+GOARM=$goarm} \
+                CC="$TOOLCHAIN/$cc" \
+                CGO_LDFLAGS="-Wl,-z,max-page-size=16384" \
+                go build -buildmode=c-shared -trimpath -ldflags="-s -w" \
+                  -o "out/$abi/libxray.so" .
+            # c-shared also emits a header we do not ship.
+            rm -f "out/$abi/libxray.h"
+            ls -la "out/$abi"
+            echo "::endgroup::"
+          }
+
+          # 16 KB page alignment is required for Android 15+ and matches how the
+          # previously shipped binary was linked.
+          build armeabi-v7a arm armv7a-linux-androideabi24-clang 7
+          build arm64-v8a   arm64 aarch64-linux-android24-clang
+          build x86_64      amd64 x86_64-linux-android24-clang
+
+      - name: Report versions
+        run: |
+          {
+            echo "### libxray.so build"
+            echo
+            echo "| item | value |"
+            echo "| --- | --- |"
+            echo "| xray-core module | \`$(go list -m github.com/xtls/xray-core)\` |"
+            echo "| xtls/reality | \`$(go list -m github.com/xtls/reality 2>/dev/null || echo n/a)\` |"
+            echo "| utls | \`$(go list -m github.com/refraction-networking/utls 2>/dev/null || echo n/a)\` |"
+            echo "| go | \`$(go version)\` |"
+            echo
+            echo "ABIs: $(ls out | tr '\n' ' ')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload jniLibs
+        uses: actions/upload-artifact@v4
+        with:
+          name: libxray-jniLibs
+          path: gwvpn-new/native/libxray/out/
+          if-no-files-found: error
