@@ -39,6 +39,11 @@ class GwSocksServer(
     private val executor: ExecutorService = Executors.newCachedThreadPool { r ->
         Thread(r, "gw-socks-worker").apply { isDaemon = true }
     }
+    // Serial DNS-over-TCP worker + bounded wait in relayUdp keep a stuck
+    // resolver from accumulating blocked threads and silent failures.
+    private val dnsExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "gw-dns-tcp").apply { isDaemon = true }
+    }
     private val connections = AtomicLong(0)
 
     @Volatile var port: Int = 0
@@ -229,7 +234,10 @@ class GwSocksServer(
                 ATYP_IPV6 -> {
                     host = InetAddress.getByAddress(data.copyOfRange(pos, pos + 16)); pos += 16
                 }
-                else -> return null
+                else -> {
+                    Log.w(TAG, "UDP datagram with unsupported ATYP $atyp dropped")
+                    return null
+                }
             }
             val port = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
             pos += 2
@@ -244,7 +252,18 @@ class GwSocksServer(
 
     private fun relayUdp(dgram: UdpDatagram): ByteArray? {
         if (dnsOverTcp && dgram.dstPort == DNS_PORT && dgram.payload.isNotEmpty()) {
-            return resolveDnsOverTcp(dgram.dstHost.hostAddress ?: "8.8.8.8", dgram.payload)
+            // Bounded: an unresponsive remote resolver must not pin this UDP
+            // control session forever with a blocked channel read.
+            val future = dnsExecutor.submit {
+                resolveDnsOverTcp(dgram.dstHost.hostAddress ?: "8.8.8.8", dgram.payload)
+            }
+            return try {
+                future.get(DNS_TCP_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (e: Exception) {
+                future.cancel(true)
+                Log.w(TAG, "DNS-TCP ${dgram.dstHost.hostAddress} timed out or failed: $e")
+                null
+            }
         }
         return null
     }
