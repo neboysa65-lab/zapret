@@ -1,17 +1,3 @@
-# NOTE: this file must live at the REPOSITORY ROOT as
-#   .github/workflows/build-libxray.yml
-# to be runnable. It is parked here because the GitHub App used to commit it
-# cannot write under .github/workflows (that path needs the dedicated
-# "workflows" permission). Move it with:
-#
-#   mkdir -p .github/workflows
-#   git mv gwvpn-new/native/libxray/build-libxray.workflow.yml \
-#          .github/workflows/build-libxray.yml
-#   git commit -m "ci(xray): activate libxray build workflow" && git push
-#
-# (Note the workflows already in gwvpn-new/.github/workflows/ are inactive for
-# the same root-path reason.)
-
 name: Build libxray.so (Xray-core)
 
 # Rebuilds the Xray engine that vyom-tun-sdk ships as a prebuilt .so.
