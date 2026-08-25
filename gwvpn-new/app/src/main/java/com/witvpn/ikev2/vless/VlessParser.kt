@@ -58,9 +58,27 @@ object VlessParser {
         s
     }
 
+    /**
+     * java.net.URI is strict RFC 2396: a raw space anywhere — in practice the
+     * "#name" fragment, e.g. "#🇵🇱 PL01" — makes the constructor throw, and the
+     * node is then silently dropped from the whole subscription.
+     *
+     * Our own panel percent-encodes the fragment (%20), so this is a
+     * compatibility net for links pasted by hand or served by panels that do
+     * not encode; lenient parsers such as android.net.Uri (used by the SDK's
+     * LinkParser) and Happ accept them.
+     *
+     * Strictly additive: any link java.net.URI already accepts parses unchanged.
+     */
+    private fun toUri(url: String): URI = try {
+        URI(url)
+    } catch (_: Exception) {
+        URI(url.replace(" ", "%20"))
+    }
+
     private fun parseVlessUrl(url: String): VlessConfig? {
         try {
-            val uri = URI(url)
+            val uri = toUri(url)
             val uuid = uri.userInfo?.split(":")?.firstOrNull() ?: return null
             val host = uri.host ?: return null
             val port = if (uri.port > 0) uri.port else 443
@@ -100,7 +118,7 @@ object VlessParser {
      */
     private fun parseHysteria2Url(url: String): VlessConfig? {
         try {
-            val uri = URI(url)
+            val uri = toUri(url)
             // userInfo = password; может быть URL-encoded
             val password = uri.rawUserInfo?.let { urlDecode(it) }
                 ?: uri.userInfo
