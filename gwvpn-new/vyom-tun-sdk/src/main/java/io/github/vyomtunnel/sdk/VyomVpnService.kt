@@ -135,7 +135,15 @@ class VyomVpnService : TProxyService() {
         thread(name = "VyomStartup") {
             try {
                 if (!NativeEngine.isLoaded) {
-                    Log.e("VyomVPN", "Native libraries not loaded, cannot start VPN")
+                    // Name the missing library. A bare "Native libraries not
+                    // loaded" gave no way to tell that libvyom-v2ray.so — the
+                    // JNI bridge that actually exports startXray — was the one
+                    // absent from jniLibs.
+                    Log.e(
+                        "VyomVPN",
+                        "Native libraries not loaded, cannot start VPN. Failed: " +
+                            NativeEngine.loadErrors.entries.joinToString { "lib${it.key}.so (${it.value})" }
+                    )
                     notifyStatus(VyomState.ERROR)
                     return@thread
                 }
@@ -146,7 +154,33 @@ class VyomVpnService : TProxyService() {
 
                 val result = NativeEngine.startXray(xrayConfig, assetPath)
                 Log.i("VyomVPN", "Xray started: $result")
-                Thread.sleep(1000)
+
+                // startXray's return code alone is not a dependable readiness
+                // signal, so confirm the engine actually accepts traffic before
+                // building a tun that routes 0.0.0.0/0 into it. Without this an
+                // engine that failed to start still produced a "connected"
+                // tunnel that silently blackholed every packet — precisely the
+                // "connects but no traffic" symptom.
+                if (!awaitSocksReady()) {
+                    // Only now ask the engine WHY. validateConfig returns null
+                    // when the config is fine (see vyom-bridge.cpp), so this
+                    // costs nothing on the healthy path and turns an opaque
+                    // dead tunnel into an actionable message.
+                    val reason = try {
+                        NativeEngine.validateConfig(xrayConfig, assetPath)
+                    } catch (t: Throwable) {
+                        "validateConfig failed: ${t.message}"
+                    }
+                    Log.e(
+                        "VyomVPN",
+                        "Xray never opened $BRIDGE_ADDRESS:$BRIDGE_PORT (startXray returned $result); " +
+                            "aborting instead of building a tun with no upstream. " +
+                            "Config check: ${reason ?: "config is valid — engine failed to start"}"
+                    )
+                    NativeEngine.stopXray()
+                    notifyStatus(VyomState.ERROR)
+                    return@thread
+                }
 
                 val builder = Builder()
                     .setSession("GWVPN")
@@ -234,6 +268,38 @@ class VyomVpnService : TProxyService() {
                 notifyStatus(VyomState.ERROR)
             }
         }
+    }
+
+    /**
+     * Waits until Xray's local SOCKS inbound accepts a TCP connection, which is
+     * the only trustworthy "the engine is up" signal available to us: the config
+     * is parsed and the inbound bound by then. Polls instead of sleeping a fixed
+     * second, so a healthy engine proceeds sooner and a broken one is reported
+     * instead of being papered over.
+     */
+    private fun awaitSocksReady(
+        timeoutMs: Long = 8_000,
+        intervalMs: Long = 200,
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                java.net.Socket().use { probe ->
+                    probe.connect(
+                        java.net.InetSocketAddress(BRIDGE_ADDRESS, BRIDGE_PORT),
+                        1_000,
+                    )
+                }
+                return true
+            } catch (_: Throwable) {
+                try {
+                    Thread.sleep(intervalMs)
+                } catch (_: InterruptedException) {
+                    return false
+                }
+            }
+        }
+        return false
     }
 
     /**
