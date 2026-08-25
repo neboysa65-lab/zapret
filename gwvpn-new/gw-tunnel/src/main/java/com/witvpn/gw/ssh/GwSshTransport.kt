@@ -31,6 +31,7 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
     val isConnected: Boolean get() = connected && client.isConnected
 
     fun connect(protect: ((java.net.Socket) -> Unit)? = null) {
+        GwCrypto.ensureFullBouncyCastle()
         client.addHostKeyVerifier(object : HostKeyVerifier {
             override fun verify(hostname: String?, port: Int, key: PublicKey?): Boolean =
                 key != null && verifyHostKey(key)
