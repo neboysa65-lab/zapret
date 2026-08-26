@@ -463,6 +463,11 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
     @SuppressLint("SetTextI18n")
     override fun initView() {
         updateServerButton(getIkev2Draft())
+        // IKEv2 убран из пользовательского UI: кнопка не отображается, а вес
+        // селектора перераспределён на три оставшихся протокола. Ядро и логика
+        // IKEv2 не тронуты — активная сессия по-прежнему показывается корректно.
+        binding.protocolSelector.weightSum = 3f
+        binding.btnIpv4.isVisible = false
         setProtocol(resolveInitialProtocol())
         
         binding.btnIpv4.setOnClickListener {
@@ -1110,7 +1115,9 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
 
         val savedProtocol = getStringPref(SharePrefs.KEY_SELECTED_PROTOCOL, "GW") ?: "GW"
         return when (savedProtocol) {
-            "AWG", "VLESS", "IKEv2", "GW" -> savedProtocol
+            // "IKEv2" сознательно не восстанавливается: протокол скрыт из UI,
+            // сохранённый ранее выбор уходит в дефолтный GW.
+            "AWG", "VLESS", "GW" -> savedProtocol
             else -> "GW"
         }
     }
