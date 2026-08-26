@@ -4,10 +4,12 @@ import com.witvpn.ikev2.data.remote.ApiService
 import com.witvpn.ikev2.data.remote.model.ServerObject
 import com.witvpn.ikev2.domain.model.Server
 import com.witvpn.ikev2.domain.repository.ServerRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,6 +29,24 @@ class ServerRepositoryImpl @Inject constructor(
 
     override suspend fun getServersGw(context: android.content.Context, param: MutableMap<String, Any>) {
         try {
+            // Явный pubkey устройства. Бэкенд шифрует конверт на `pubkey`, а при
+            // его отсутствии — на `userId`; из-за этого любое расхождение
+            // сохранённого userId с локальной энтропией делало нерасшифруемыми
+            // ВСЕ ноды, и GW-серверы «пропадали» до выхода из аккаунта и
+            // переустановки. Ключ выводится из той же энтропии, которой конверт
+            // потом расшифровывается, так что расхождение стало невозможным.
+            val pubKey = withContext(Dispatchers.Default) {
+                com.witvpn.ikev2.domain.model.GwIdentity.publicKeyHex(context)
+            }
+            if (pubKey != null) {
+                param["pubkey"] = pubKey
+            } else {
+                android.util.Log.e(
+                    "GwServerRepository",
+                    "getServersGw: локальный GW-ключ недоступен, запрос уйдёт с fallback на userId"
+                )
+            }
+
             val response = api.getServersGw(param)
             // success может прийти как 1 (успех). Если поле не парсится (null), но
             // сервер вернул данные — не считаем это ошибкой: старые/иные бэкенды
@@ -42,24 +62,30 @@ class ServerRepositoryImpl @Inject constructor(
                 return
             }
 
-            val decoded = dtos.mapNotNull { dto ->
-                val meta = dto.meta ?: return@mapNotNull null
-                val enc = dto.enc
-                com.witvpn.ikev2.domain.model.ServerGw.decrypt(
-                    context = context,
-                    metaId = meta.id ?: "",
-                    name = meta.name,
-                    country = meta.country,
-                    countryCode = meta.countryCode,
-                    state = meta.state,
-                    premium = meta.premium ?: false,
-                    recommend = meta.recommend ?: false,
-                    priority = meta.priority ?: 0,
-                    status = meta.status ?: true,
-                    eph = enc?.eph,
-                    ct = enc?.ct,
-                    iv = enc?.iv
-                )
+            // ECDH + AES-GCM на каждую ноду плюс вывод secp256k1-ключа — это
+            // десятки миллисекунд на сервер. Раньше цикл крутился в контексте
+            // вызывающего, то есть на Main, и подвешивал UI ровно в момент
+            // открытия списка серверов.
+            val decoded = withContext(Dispatchers.Default) {
+                dtos.mapNotNull { dto ->
+                    val meta = dto.meta ?: return@mapNotNull null
+                    val enc = dto.enc
+                    com.witvpn.ikev2.domain.model.ServerGw.decrypt(
+                        context = context,
+                        metaId = meta.id ?: "",
+                        name = meta.name,
+                        country = meta.country,
+                        countryCode = meta.countryCode,
+                        state = meta.state,
+                        premium = meta.premium ?: false,
+                        recommend = meta.recommend ?: false,
+                        priority = meta.priority ?: 0,
+                        status = meta.status ?: true,
+                        eph = enc?.eph,
+                        ct = enc?.ct,
+                        iv = enc?.iv
+                    )
+                }
             }
             val usable = decoded.filter { it.config != null }
             val failed = decoded.size - usable.size
@@ -71,16 +97,20 @@ class ServerRepositoryImpl @Inject constructor(
                 )
             }
 
-            // Если сервер прислал ноды, но НИ ОДНА не расшифровалась — это почти
-            // наверняка проблема ключа/регистрации на этом устройстве, а не удаление
-            // серверов. В таком случае НЕ затираем ранее показанный список, чтобы
-            // серверы не «пропадали» из UI. Пустой ответ (dtos пуст) — легитимно.
+            // Если сервер прислал ноды, но НИ ОДНА не расшифровалась — сохраняем
+            // ранее показанный список, чтобы серверы не мигали. Но только если он
+            // непустой: раньше этот `return` срабатывал и на пустом списке, и
+            // ошибка ключа превращалась в вечно пустой GW-раздел без единого
+            // видимого признака проблемы.
             if (dtos.isNotEmpty() && usable.isEmpty()) {
+                val keeping = gwState.value.isNotEmpty()
                 android.util.Log.e(
                     "GwServerRepository",
-                    "getServersGw: все ${dtos.size} серверов не расшифровались, оставляем прежний список"
+                    "getServersGw: все ${dtos.size} серверов не расшифровались " +
+                        (if (keeping) "— оставляем прежний список"
+                        else "и показывать нечего: проверь GW-ключ устройства (pubkey=${pubKey != null})")
                 )
-                return
+                if (keeping) return
             }
 
             gwState.update { usable }
@@ -117,7 +147,10 @@ class ServerRepositoryImpl @Inject constructor(
         val response = api.getServers(param)
         val servers = response.data.map { unwrap(it) }
         state.update { servers }
-        fetchServersLoad()
+        // fetchServersLoad() отсюда убран: ViewModel всё равно вызывала его
+        // отдельно, и на каждое открытие списка уходило ДВА одинаковых запроса
+        // servers/load (видно в логах). Теперь его дёргает только вызывающий —
+        // параллельно с остальными, а не после ответа getServers.
     }
     
     override suspend fun fetchServersLoad() {

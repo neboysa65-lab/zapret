@@ -3,6 +3,7 @@ package com.witvpn.ikev2.data
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -20,6 +21,7 @@ object SecureStore {
     private const val KEY_ALIAS = "gw_entropy_key_1"
     private const val PREFIX = "ENC1:"
     private const val GCM_TAG_BITS = 128
+    private const val TAG = "SecureStore"
 
     private fun obtainKey(): SecretKey {
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
@@ -47,7 +49,11 @@ object SecureStore {
             val ct = cipher.doFinal(plain.toByteArray(Charsets.ISO_8859_1))
             PREFIX + Base64.encodeToString(iv, Base64.NO_WRAP) + "." +
                 Base64.encodeToString(ct, Base64.NO_WRAP)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // Фолбэк на plaintext намеренный: иначе устройство с недоступным
+            // Keystore потеряло бы аккаунт целиком. Но это ДЕГРАДАЦИЯ, и она
+            // не должна быть бесшумной — раньше здесь не было ни строки лога.
+            Log.e(TAG, "Keystore seal failed, storing value UNENCRYPTED: $e")
             plain
         }
     }

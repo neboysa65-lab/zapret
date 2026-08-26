@@ -9,23 +9,17 @@ import net.schmizz.sshj.connection.channel.direct.DirectConnection
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import java.io.Closeable
 import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
 import java.security.MessageDigest
 import java.security.PublicKey
 import java.util.Base64
-import java.util.concurrent.locks.ReentrantLock
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import kotlin.concurrent.thread
-import kotlin.concurrent.withLock
 
 class GwSshTransport(private val config: GwServerConfig) : Closeable {
 
     private val client: SSHClient = SSHClient(DefaultConfig().apply {
         keepAliveProvider = KeepAliveProvider.HEARTBEAT
     })
-    private val channelLock = ReentrantLock()
     @Volatile private var connected = false
 
     val isConnected: Boolean get() = connected && client.isConnected
@@ -65,10 +59,13 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
     }
 
     fun openChannel(host: String, port: Int): DirectConnection {
-        channelLock.withLock {
-            check(connected) { "transport not connected" }
-            return client.newDirectConnection(host, port)
-        }
+        check(connected) { "transport not connected" }
+        // Открытие каналов НЕ сериализуем: sshj сам синхронизирует запись в
+        // транспорт и раздачу channel id. Раньше channelLock держался на всё
+        // время открытия — то есть на полный RTT до сервера, — и загрузка одной
+        // страницы (30-50 соединений) платила 30-50 последовательных RTT.
+        // Именно так «работающий» туннель выглядел мёртвым по скорости.
+        return client.newDirectConnection(host, port)
     }
 
     override fun close() {
@@ -104,24 +101,6 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
             val mac = Mac.getInstance("HmacSHA512")
             mac.init(SecretKeySpec(key, "HmacSHA512"))
             return mac.doFinal(data)
-        }
-
-        fun pipe(src: InputStream, dst: OutputStream, onDone: Runnable) {
-            thread(name = "gw-pipe") {
-                try {
-                    val buf = ByteArray(16 * 1024)
-                    while (true) {
-                        val n = src.read(buf)
-                        if (n < 0) break
-                        dst.write(buf, 0, n)
-                        dst.flush()
-                    }
-                } catch (_: IOException) {
-                } finally {
-                    runCatching { dst.close() }
-                    onDone.run()
-                }
-            }
         }
     }
 }

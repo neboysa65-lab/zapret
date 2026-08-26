@@ -30,6 +30,10 @@ class GwSocksServer(
         private const val ATYP_IPV6 = 0x04
         private const val DNS_PORT = 53
         private const val DNS_TCP_TIMEOUT_MS = 5000
+        private const val DNS_WORKERS = 8
+        private const val RELAY_BUFFER_BYTES = 16 * 1024
+        /** Сколько ждём догрузки ответа после EOF от приложения. */
+        private const val RELAY_DRAIN_TIMEOUT_MS = 30_000L
         private val SUCCESS_REPLY = byteArrayOf(VERSION.toByte(), 0x00, 0x00, ATYP_IPV4.toByte(), 0, 0, 0, 0, 0, 0)
         private val GENERAL_FAILURE = byteArrayOf(VERSION.toByte(), 0x01, 0x00, ATYP_IPV4.toByte(), 0, 0, 0, 0, 0, 0)
         private val CMD_UNSUPPORTED = byteArrayOf(VERSION.toByte(), 0x07, 0x00, ATYP_IPV4.toByte(), 0, 0, 0, 0, 0, 0)
@@ -39,9 +43,10 @@ class GwSocksServer(
     private val executor: ExecutorService = Executors.newCachedThreadPool { r ->
         Thread(r, "gw-socks-worker").apply { isDaemon = true }
     }
-    // Serial DNS-over-TCP worker + bounded wait in relayUdp keep a stuck
-    // resolver from accumulating blocked threads and silent failures.
-    private val dnsExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+    // DNS-over-TCP резолвы идут параллельно: один медленный апстрим не должен
+    // задерживать остальные запросы (раньше единственный поток + таймаут 5 с
+    // на запрос выстраивали все резолвы страницы в очередь).
+    private val dnsExecutor: ExecutorService = Executors.newFixedThreadPool(DNS_WORKERS) { r ->
         Thread(r, "gw-dns-tcp").apply { isDaemon = true }
     }
     private val connections = AtomicLong(0)
@@ -49,8 +54,9 @@ class GwSocksServer(
     @Volatile var port: Int = 0
         private set
 
-    @Volatile var activeConnections: Long = 0
-        private set
+    /** Живые CONNECT/UDP-сессии. Раньше это было отдельное поле, которое никто
+     *  не обновлял, и статистика всегда показывала 0. */
+    val activeConnections: Long get() = connections.get()
 
     fun start() {
         val ss = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
@@ -73,6 +79,7 @@ class GwSocksServer(
     fun stop() {
         runCatching { serverSocket?.close() }
         executor.shutdownNow()
+        dnsExecutor.shutdownNow()
     }
 
     private fun handleClient(socket: Socket) {
@@ -103,16 +110,33 @@ class GwSocksServer(
 
             socket.soTimeout = 0
 
-            when (input.readByte().toInt()) {
+            // Запрос: VER CMD RSV ATYP DST.ADDR DST.PORT (RFC 1928, §4).
+            // ВАЖНО: у запроса СВОЙ байт версии — он идёт ПЕРЕД командой.
+            // Раньше первый байт запроса (0x05) читался как CMD, не совпадал
+            // ни с CONNECT (0x01), ни с UDP ASSOCIATE (0x03), и каждому
+            // соединению уходил rep=0x07 «command not supported». Именно это
+            // видно в hev-логах как сплошные "socks5 client res.rep 7":
+            // туннель поднимался, а данные не шли ни по одному соединению.
+            val reqVersion = input.readByte().toInt() and 0xFF
+            if (reqVersion != VERSION) {
+                Log.w(TAG, "bad request version $reqVersion from ${socket.remoteSocketAddress}")
+                return replyAndClose(output, GENERAL_FAILURE, socket)
+            }
+
+            when (val cmd = input.readByte().toInt() and 0xFF) {
                 CMD_CONNECT -> handleConnect(socket, input, output)
                 CMD_UDP_ASSOCIATE -> handleUdpAssociate(socket, input, output)
                 else -> {
+                    // Тихий выход отсюда и был причиной «логов нет»: клиент
+                    // получал ошибку, а в logcat не появлялось ни строки.
+                    Log.w(TAG, "unsupported SOCKS command $cmd from ${socket.remoteSocketAddress}")
                     output.write(CMD_UNSUPPORTED)
                     output.flush()
                     closeQuietly(socket)
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "socks session failed for ${socket.remoteSocketAddress}: $e")
             closeQuietly(socket)
         }
     }
@@ -140,23 +164,56 @@ class GwSocksServer(
         try {
             val chIn = channel.inputStream
             val chOut = channel.outputStream
-            GwSshTransport.pipe(chIn, socket.getOutputStream()) {
+
+            // Обе половины дуплекса живут независимо. Раньше выход из upload-цикла
+            // по EOF от приложения сразу закрывал канал и сокет в finally — ответ
+            // сервера, ещё летящий в обратную сторону, обрезался на полуслове.
+            val upstream = Thread({
+                try {
+                    val buf = ByteArray(RELAY_BUFFER_BYTES)
+                    val localIn = socket.getInputStream()
+                    while (true) {
+                        val n = localIn.read(buf)
+                        if (n < 0) break
+                        chOut.write(buf, 0, n)
+                        chOut.flush()
+                    }
+                } catch (_: IOException) {
+                } finally {
+                    // EOF вверх по потоку — сообщаем его SSH-каналу, но канал не
+                    // рвём: сервер ещё может досылать ответ.
+                    runCatching { chOut.close() }
+                }
+            }, "gw-socks-up").apply { isDaemon = true }
+
+            upstream.start()
+
+            // Downstream крутим прямо в текущем воркере: на соединение уходит два
+            // потока, а не три (на загрузке страницы это десятки соединений).
+            try {
+                val buf = ByteArray(RELAY_BUFFER_BYTES)
+                val localOut = socket.getOutputStream()
+                while (true) {
+                    val n = chIn.read(buf)
+                    if (n < 0) break
+                    localOut.write(buf, 0, n)
+                    localOut.flush()
+                }
+            } catch (_: IOException) {
+            } finally {
+                // Полузакрытие: приложение видит EOF, но может продолжать слать.
                 runCatching { socket.shutdownOutput() }
             }
-            val buf = ByteArray(16 * 1024)
-            while (true) {
-                val n = try {
-                    socket.getInputStream().read(buf)
-                } catch (_: IOException) {
-                    -1
-                }
-                if (n < 0) break
-                chOut.write(buf, 0, n)
-                chOut.flush()
-            }
-        } catch (_: IOException) {
+
+            // Ответ уже дочитан; на догрузку запроса даём ограниченное время:
+            // иначе застрявший на read() upload-поток жил бы до конца сессии,
+            // даже когда удалённая сторона давно закрылась.
+            upstream.join(RELAY_DRAIN_TIMEOUT_MS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
         } finally {
             connections.decrementAndGet()
+            // Закрытие здесь же разблокирует upstream, если он всё ещё в read().
             runCatching { channel.close() }
             closeQuietly(socket)
         }
@@ -192,17 +249,22 @@ class GwSocksServer(
                 }
 
                 val datagram = parseUdpDatagram(packet) ?: continue
-                val response = relayUdp(datagram)
-                if (response == null) {
-                    Log.w(
-                        TAG,
-                        "UDP ${datagram.dstHost.hostAddress}:${datagram.dstPort} " +
-                            "len=${datagram.payload.size} no relay path"
-                    )
-                    continue
+                val replyTo = packet.socketAddress
+                // Ответ ждём в отдельном воркере — цикл приёма остаётся свободным
+                // и следующие датаграммы не стоят в очереди за этой.
+                executor.execute {
+                    val response = relayUdp(datagram)
+                    if (response == null) {
+                        Log.w(
+                            TAG,
+                            "UDP ${datagram.dstHost.hostAddress}:${datagram.dstPort} " +
+                                "len=${datagram.payload.size} no relay path"
+                        )
+                        return@execute
+                    }
+                    val out = DatagramPacket(response, response.size, replyTo)
+                    runCatching { udp.send(out) }
                 }
-                val out = DatagramPacket(response, response.size, packet.socketAddress)
-                runCatching { udp.send(out) }
             }
         } finally {
             connections.decrementAndGet()
@@ -252,8 +314,7 @@ class GwSocksServer(
 
     private fun relayUdp(dgram: UdpDatagram): ByteArray? {
         if (dnsOverTcp && dgram.dstPort == DNS_PORT && dgram.payload.isNotEmpty()) {
-            // Bounded: an unresponsive remote resolver must not pin this UDP
-            // control session forever with a blocked channel read.
+            // Таймаут всё равно нужен: зависший апстрим не должен держать воркер.
             val future = dnsExecutor.submit(
                 java.util.concurrent.Callable<ByteArray?> {
                     resolveDnsOverTcp(dgram.dstHost.hostAddress ?: "8.8.8.8", dgram.payload)

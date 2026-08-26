@@ -386,10 +386,15 @@ object PayloadInjector {
         private val delegate: Socket,
         leftover: ByteArray,
     ) : Socket() {
-        private val prefix = ByteArrayInputStream(leftover)
+        // ОДИН экземпляр на сокет. Раньше SequenceInputStream создавался в каждом
+        // вызове getInputStream() поверх общего, уже вычитанного prefix: второй
+        // читатель (sshj читает поток и из reader-потока, и при negotiation)
+        // получал поток с потерянным началом.
+        private val stream: InputStream by lazy {
+            SequenceInputStream(ByteArrayInputStream(leftover), delegate.getInputStream())
+        }
 
-        override fun getInputStream(): InputStream =
-            SequenceInputStream(prefix, delegate.getInputStream())
+        override fun getInputStream(): InputStream = stream
 
         override fun getOutputStream() = delegate.getOutputStream()
         override fun isConnected(): Boolean = delegate.isConnected
