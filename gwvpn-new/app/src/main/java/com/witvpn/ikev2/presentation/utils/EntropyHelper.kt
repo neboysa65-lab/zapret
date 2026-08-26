@@ -28,4 +28,23 @@ object EntropyHelper {
             .filter(String::isNotEmpty)
             .size
     }
+
+    /**
+     * Каноничная форма публичного ключа GW: x||y, ровно 64 байта (128 hex).
+     *
+     * Crypto.getPubkeyAccount() возвращает BigInteger.toByteArray(), а у точек
+     * со старшим битом координаты x он даёт знак-байт "00" спереди — ключ
+     * выходит длиной 130 hex ("00||x||y"). Бэкенд такую точку не парсит:
+     * конверты не шифруются ни на одну ноду, и GW-раздел пустеет (~46%
+     * сгенерированных пар). Срезаем знак-байт до 128 hex.
+     */
+    fun canonicalPubKey(pubHex: String): String {
+        var pub = pubHex.trim()
+        if (pub.startsWith("0x")) pub = pub.substring(2)
+        if (pub.startsWith("0X")) pub = pub.substring(2)
+        if (pub.length == 130 && pub.startsWith("00")) {
+            pub = pub.substring(2)
+        }
+        return pub
+    }
 }

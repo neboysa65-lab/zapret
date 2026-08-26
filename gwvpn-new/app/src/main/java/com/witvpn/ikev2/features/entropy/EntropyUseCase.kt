@@ -45,7 +45,7 @@ class EntropyUseCase @Inject constructor(
             entropy = entropyStr,
             entropyMnemonic = EntropyHelper.decodeMnemonicFromEntropy(entropy),
             entropyRSA = Crypto.encrypt(entropy),
-            pubKey = Crypto.getPubkeyAccount(entropy)
+            pubKey = EntropyHelper.canonicalPubKey(Crypto.getPubkeyAccount(entropy))
         )
     }
 

@@ -37,6 +37,9 @@ def to_compact(payload_dict: Dict[str, Any]) -> Dict[str, Any]:
 
 def _load_user_pubkey(pub_hex: str) -> ec.EllipticCurvePublicKey:
     raw = bytes.fromhex(pub_hex)
+    if len(raw) == 65 and raw[0] == 0x00:
+        # Знаковый нулевой байт от BigInteger.toByteArray(): "00||x||y".
+        raw = b"\x04" + raw[1:]
     if len(raw) == 64:
         raw = b"\x04" + raw
     if len(raw) not in (33, 65):
@@ -86,6 +89,13 @@ def normalize_user_pubkey(pub_raw: str) -> str | None:
     Возвращает нормализованный hex для шифрования или None."""
     pub = pub_raw.strip().lower()
     if pub.startswith("0x"):
+        pub = pub[2:]
+    # Java-клиент выводит pubkey через BigInteger.toByteArray(): при старшем
+    # бите координаты x спереди оказывается знаковый нулевой байт, и ключ
+    # приходит как "00||x||y" (130 hex). Каноничная форма — x||y (64 байта).
+    # Раньше такая строка проходила проверку длины и рвала from_encoded_point:
+    # конверт не шифровался ни на одну ноду, GW-раздел у аккаунта пустел.
+    if len(pub) == 130 and pub.startswith("00"):
         pub = pub[2:]
     if len(pub) == 128:
         pub = "04" + pub

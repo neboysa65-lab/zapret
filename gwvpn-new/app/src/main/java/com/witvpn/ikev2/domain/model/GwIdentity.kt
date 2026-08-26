@@ -91,7 +91,9 @@ object GwIdentity {
         return try {
             val entropy = entropyStr.toByteArray(Charsets.ISO_8859_1)
             val priv = Crypto.getPrivkeyAccount(entropy)
-            val pub = Crypto.getPubkeyAccount(entropy)
+            // Канонизация обязательна: без неё ~46% пар рождаются с pubkey
+            // "00||x||y" (130 hex), который бэкенд отказывается парсить.
+            val pub = EntropyHelper.canonicalPubKey(Crypto.getPubkeyAccount(entropy))
             if (priv.isNullOrBlank() || pub.isNullOrBlank()) {
                 Log.e(TAG, "key derivation produced empty keys")
                 null
@@ -213,7 +215,7 @@ object GwIdentity {
                 entropy = entropyStr,
                 entropyMnemonic = EntropyHelper.decodeMnemonicFromEntropy(entropy),
                 entropyRSA = Crypto.encrypt(entropy),
-                pubKey = Crypto.getPubkeyAccount(entropy),
+                pubKey = EntropyHelper.canonicalPubKey(Crypto.getPubkeyAccount(entropy)),
             )
             Log.w(
                 TAG,
