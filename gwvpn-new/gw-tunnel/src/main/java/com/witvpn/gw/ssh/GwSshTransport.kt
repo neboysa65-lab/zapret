@@ -3,6 +3,7 @@ package com.witvpn.gw.ssh
 import com.witvpn.gw.injector.PayloadInjector
 import com.witvpn.gw.model.GwServerConfig
 import net.schmizz.keepalive.KeepAliveProvider
+import net.schmizz.keepalive.KeepAliveRunner
 import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.DirectConnection
@@ -18,11 +19,33 @@ import javax.crypto.spec.SecretKeySpec
 class GwSshTransport(private val config: GwServerConfig) : Closeable {
 
     private val client: SSHClient = SSHClient(DefaultConfig().apply {
-        keepAliveProvider = KeepAliveProvider.HEARTBEAT
+        // KEEP_ALIVE, а не HEARTBEAT. Heartbeater только ПИШЕТ в сокет
+        // (SSH_MSG_IGNORE) и ответа не ждёт, а запись в «чёрную дыру» — оборвался
+        // Wi-Fi, телефон переехал на LTE, NAT оператора выкинул простоявшее
+        // соединение — не даёт ошибки до конца TCP-ретрансмиссий, то есть до
+        // ~15 минут. Всё это время туннель считался живым, каналы не
+        // открывались, и «подключено, но интернета нет» держалось до ручного
+        // переподключения. KEEP_ALIVE отправляет global request с want_reply и
+        // считает неотвеченные: транспорт объявляется мёртвым за
+        // KEEPALIVE_MAX_MISSED * KEEPALIVE_INTERVAL_SEC.
+        keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
     })
     @Volatile private var connected = false
 
-    val isConnected: Boolean get() = connected && client.isConnected
+    /** Сокет под SSH — нужен, чтобы дешёво замечать закрытие снизу. */
+    @Volatile private var wire: java.net.Socket? = null
+
+    val isConnected: Boolean
+        get() = connected && client.isConnected && wire?.isClosed != true
+
+    /**
+     * Помечает транспорт мёртвым, не дожидаясь keepalive.
+     * Вызывается, когда открытие каналов начало стабильно падать: supervisor
+     * сервиса увидит [isConnected] == false и пересоберёт соединение.
+     */
+    fun markDead() {
+        connected = false
+    }
 
     fun connect(protect: ((java.net.Socket) -> Unit)? = null) {
         GwCrypto.ensureFullBouncyCastle()
@@ -34,6 +57,7 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
                 mutableListOf()
         })
         val prepared = PayloadInjector.connect(config, protect)
+        wire = prepared
         client.setSocketFactory(object : javax.net.SocketFactory() {
             override fun createSocket(): java.net.Socket = prepared
             override fun createSocket(host: String?, port: Int): java.net.Socket =
@@ -46,8 +70,15 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
                 throw IOException("unsupported")
         })
         client.setConnectTimeout(CONNECT_TIMEOUT_MS)
+        // Таймаут чтения сокета остаётся нулевым: транспорт мультиплексный и
+        // законно простаивает сколько угодно. А вот открытие канала ограничиваем —
+        // при мёртвом соединении оно ждало ответа сервера бесконечно, и каждое
+        // соединение приложения просто ВИСЛО (хуже, чем быстрый отказ), а сигнала
+        // «транспорт пора пересобрать» не приходило вообще.
         client.setTimeout(0)
+        client.connection.timeoutMs = CHANNEL_OPEN_TIMEOUT_MS
         client.connection.keepAlive.keepAliveInterval = KEEPALIVE_INTERVAL_SEC
+        (client.connection.keepAlive as? KeepAliveRunner)?.maxAliveCount = KEEPALIVE_MAX_MISSED
         client.connect(config.ipAddress, config.sshPort)
         try {
             client.authPassword(config.sshUsername, config.sshPassword)
@@ -70,7 +101,13 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
 
     override fun close() {
         connected = false
+        // Сокет закрываем ПЕРВЫМ: client.disconnect() пишет в него прощальный
+        // пакет, а на мёртвой сети эта запись может подвиснуть — close() же
+        // вызывается из supervisor'а прямо перед переподключением, и застревать
+        // здесь означало бы не восстановить связь вообще.
+        runCatching { wire?.close() }
         runCatching { client.disconnect() }
+        wire = null
     }
 
     private fun verifyHostKey(presented: PublicKey): Boolean {
@@ -95,7 +132,19 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
 
     companion object {
         private const val CONNECT_TIMEOUT_MS = 20_000
-        private const val KEEPALIVE_INTERVAL_SEC = 30
+
+        /** Ограничение на открытие одного канала (direct-tcpip). */
+        private const val CHANNEL_OPEN_TIMEOUT_MS = 20_000
+
+        private const val KEEPALIVE_INTERVAL_SEC = 20
+
+        /**
+         * Сколько неотвеченных keepalive терпим. 3 * 20 с ≈ минута до вердикта
+         * «транспорт мёртв» — дальше supervisor сервиса пересоберёт соединение.
+         * Меньше ставить не стоит: на плохой мобильной сети одиночная потеря
+         * пакета не должна выглядеть как обрыв.
+         */
+        private const val KEEPALIVE_MAX_MISSED = 3
 
         fun hmacSha512(key: ByteArray, data: ByteArray): ByteArray {
             val mac = Mac.getInstance("HmacSHA512")

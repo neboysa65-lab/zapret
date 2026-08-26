@@ -264,6 +264,21 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                 binding.tvDownload.text = formatTraffic(rx)
             }
         }
+
+        override fun onReconnecting(active: Boolean) {
+            activity?.runOnUiThread {
+                if (!isAdded) return@runOnUiThread
+                if (!isGwMode) return@runOnUiThread
+                if (active) {
+                    // Туннель НЕ разорван: показываем восстановление связи, но
+                    // кнопку не превращаем в «подключить» — пользователь в любой
+                    // момент должен иметь возможность отключить VPN.
+                    binding.tvState.text = getString(R.string.connecting, "...")
+                } else if (GwManager.isConnected()) {
+                    updateVlessState(true)
+                }
+            }
+        }
     }
 
     private val gwConnectionTimeoutRunnable = Runnable {

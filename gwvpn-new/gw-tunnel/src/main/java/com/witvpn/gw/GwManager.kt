@@ -17,6 +17,15 @@ object GwManager {
     interface StateListener {
         fun onStateChange(state: State)
         fun onTrafficUpdate(rx: Long, tx: Long)
+
+        /**
+         * Туннель НЕ разорван, но SSH под ним пересобирается (обрыв Wi-Fi,
+         * переезд на LTE, простой в фоне). Отдельный сигнал, а не новое значение
+         * [State]: состояние обязано остаться CONNECTED — VPN активен, маршрут
+         * на месте, трафик наружу не утекает, и кнопка «отключить» должна
+         * работать в любой момент.
+         */
+        fun onReconnecting(active: Boolean) {}
     }
 
     private const val TAG = "GwManager"
@@ -24,7 +33,17 @@ object GwManager {
     private val KEY_CONFIG: String get() = GwObf.KEY_CONFIG
     private val KEY_RUNNING: String get() = GwObf.KEY_RUNNING
 
+    // Списки split-tunnel нужны сервису после рестарта системой, когда intent
+    // приходит пустой. Ключи производные от KEY_CONFIG — новых литералов в dex
+    // не добавляем, значения так же уходят под Keystore.
+    private val KEY_EXCLUDED_APPS: String get() = GwObf.KEY_CONFIG + "_x"
+    private val KEY_ALLOWED_APPS: String get() = GwObf.KEY_CONFIG + "_a"
+
     @Volatile var state: State = State.DISCONNECTED
+        private set
+
+    /** Идёт автоматическое восстановление связи под живым туннелем. */
+    @Volatile var isReconnecting: Boolean = false
         private set
 
     @Volatile var lastError: String? = null
@@ -56,10 +75,22 @@ object GwManager {
             if (!listeners.contains(listener)) listeners.add(listener)
         }
         listener.onTrafficUpdate(rxTotal, txTotal)
+        // Экран мог открыться посреди переподключения — сообщаем текущее
+        // состояние сразу, иначе UI покажет обычное «подключено».
+        if (isReconnecting) runCatching { listener.onReconnecting(true) }
     }
 
     fun unregisterListener(listener: StateListener) {
         synchronized(listeners) { listeners.remove(listener) }
+    }
+
+    internal fun setReconnecting(active: Boolean) {
+        if (isReconnecting == active) return
+        isReconnecting = active
+        Log.i(TAG, "GW reconnecting -> $active")
+        synchronized(listeners) { listeners.toList() }.forEach {
+            runCatching { it.onReconnecting(active) }
+        }
     }
 
     internal fun setState(newState: State, error: String? = null) {
@@ -71,6 +102,7 @@ object GwManager {
         state = newState
         Log.i(TAG, "GW state -> $newState${if (error != null) " ($error)" else ""}")
         if (newState == State.DISCONNECTED) {
+            setReconnecting(false)
             resetTraffic()
             clearLastErrorInternal()
         }
@@ -96,7 +128,12 @@ object GwManager {
     fun saveConfig(context: Context, config: GwServerConfig?) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (config == null) {
-            prefs.edit().remove(KEY_CONFIG).putBoolean(KEY_RUNNING, false).apply()
+            prefs.edit()
+                .remove(KEY_CONFIG)
+                .remove(KEY_EXCLUDED_APPS)
+                .remove(KEY_ALLOWED_APPS)
+                .putBoolean(KEY_RUNNING, false)
+                .apply()
         } else {
             // Конфиг ноды (ip/port/ssh_password/payload) храним только в sealed-виде:
             // ключ — в Android Keystore, plaintext не попадает на диск.
@@ -105,6 +142,29 @@ object GwManager {
                 .putBoolean(KEY_RUNNING, true)
                 .apply()
         }
+    }
+
+    /**
+     * Сохраняет списки split-tunnel рядом с конфигом. Нужны при рестарте сервиса
+     * системой: тогда intent приходит без extras, и раньше туннель поднимался
+     * вообще без фильтров — исключённые приложения молча заворачивались в VPN.
+     */
+    fun saveAppFilters(context: Context, excludedApps: List<String>, allowedApps: List<String>) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_EXCLUDED_APPS, GwVault.seal(excludedApps.joinToString("\n")))
+            .putString(KEY_ALLOWED_APPS, GwVault.seal(allowedApps.joinToString("\n")))
+            .apply()
+    }
+
+    /** @return excluded to allowed. */
+    fun restoreAppFilters(context: Context): Pair<List<String>, List<String>> {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        fun read(key: String): List<String> =
+            GwVault.unseal(prefs.getString(key, null))
+                ?.split("\n")
+                ?.filter { it.isNotBlank() }
+                ?: emptyList()
+        return read(KEY_EXCLUDED_APPS) to read(KEY_ALLOWED_APPS)
     }
 
     fun restoreConfig(context: Context): GwServerConfig? {

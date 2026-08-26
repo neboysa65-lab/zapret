@@ -14,10 +14,21 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * SOCKS5-фронтенд для tun2socks.
+ *
+ * Транспорт берётся через [transportProvider], а не передаётся один раз: при
+ * обрыве сети SSH пересобирается заново, и если бы ссылка была фиксированной,
+ * пришлось бы поднимать заново весь стек — новый порт, новый yaml, перезапуск
+ * tun2socks, пересоздание TUN. Теперь порт и tun живут через переподключения
+ * нетронутыми, а меняется только транспорт под ними.
+ */
 class GwSocksServer(
-    private val transport: GwSshTransport,
+    private val transportProvider: () -> GwSshTransport?,
+    private val onTransportFailure: () -> Unit = {},
     private val dnsOverTcp: Boolean = true,
 ) {
     companion object {
@@ -34,6 +45,14 @@ class GwSocksServer(
         private const val RELAY_BUFFER_BYTES = 16 * 1024
         /** Сколько ждём догрузки ответа после EOF от приложения. */
         private const val RELAY_DRAIN_TIMEOUT_MS = 30_000L
+
+        /**
+         * Сколько подряд неудачных открытий канала считаем приговором транспорту.
+         * Один отказ — это чаще всего недоступный адрес и рвать туннель незачем;
+         * а вот когда падает всё подряд, соединение мертво, даже если TCP об этом
+         * ещё не знает (оборванный Wi-Fi выглядит именно так).
+         */
+        private const val DEAD_AFTER_FAILURES = 3
         private val SUCCESS_REPLY = byteArrayOf(VERSION.toByte(), 0x00, 0x00, ATYP_IPV4.toByte(), 0, 0, 0, 0, 0, 0)
         private val GENERAL_FAILURE = byteArrayOf(VERSION.toByte(), 0x01, 0x00, ATYP_IPV4.toByte(), 0, 0, 0, 0, 0, 0)
         private val CMD_UNSUPPORTED = byteArrayOf(VERSION.toByte(), 0x07, 0x00, ATYP_IPV4.toByte(), 0, 0, 0, 0, 0, 0)
@@ -51,12 +70,63 @@ class GwSocksServer(
     }
     private val connections = AtomicLong(0)
 
+    /** Подряд идущие неудачи открытия канала; сбрасывается на первом успехе. */
+    private val openFailures = AtomicInteger(0)
+
+    /**
+     * Открывает direct-tcpip канал через текущий транспорт.
+     *
+     * Возвращает null при неудаче и, если похоже, что виноват не адрес, а сам
+     * транспорт, дёргает [onTransportFailure] — сервис пересоберёт SSH. Без
+     * этого сигнала мёртвое соединение никто не замечал: keepalive ждёт своей
+     * минуты, а приложения всё это время получают отказы.
+     */
+    private fun openChannel(host: String, port: Int): net.schmizz.sshj.connection.channel.direct.DirectConnection? {
+        val transport = transportProvider()
+        if (transport == null || !transport.isConnected) {
+            Log.w(TAG, "open $host:$port — транспорт недоступен, просим переподключение")
+            onTransportFailure()
+            return null
+        }
+        return try {
+            val ch = transport.openChannel(host, port)
+            openFailures.set(0)
+            ch
+        } catch (e: Exception) {
+            val failures = openFailures.incrementAndGet()
+            // Обрыв транспорта — приговор сразу. Одиночный отказ по адресу
+            // (закрытый порт, недоступный хост) приговором быть не должен, иначе
+            // туннель переподключался бы от каждого неудачного соединения.
+            // А вот когда падает подряд DEAD_AFTER_FAILURES штук — соединение
+            // мертво, даже если TCP об этом ещё не сообщил (типичная картина
+            // после потери Wi-Fi: каждое открытие канала уходит в таймаут).
+            val dead = e is net.schmizz.sshj.transport.TransportException ||
+                !transport.isConnected ||
+                failures >= DEAD_AFTER_FAILURES
+            Log.w(TAG, "open $host:$port failed (подряд=$failures, dead=$dead): $e")
+            if (dead) {
+                transport.markDead()
+                onTransportFailure()
+            }
+            null
+        }
+    }
+
     @Volatile var port: Int = 0
         private set
 
     /** Живые CONNECT/UDP-сессии. Раньше это было отдельное поле, которое никто
      *  не обновлял, и статистика всегда показывала 0. */
     val activeConnections: Long get() = connections.get()
+
+    /**
+     * Транспорт заменён — счётчик подряд идущих отказов больше не относится к
+     * делу. Без сброса пара «висячих» отказов старого соединения плюс один
+     * честный отказ по адресу дали бы приговор уже живому транспорту.
+     */
+    fun onTransportReplaced() {
+        openFailures.set(0)
+    }
 
     fun start() {
         val ss = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
@@ -150,12 +220,8 @@ class GwSocksServer(
         }
         Log.d(TAG, "CONNECT ${target.first}:${target.second}")
 
-        val channel = try {
-            transport.openChannel(target.first, target.second)
-        } catch (e: Exception) {
-            Log.w(TAG, "CONNECT ${target.first}:${target.second} channel failed: $e")
-            return replyAndClose(output, GENERAL_FAILURE, socket)
-        }
+        val channel = openChannel(target.first, target.second)
+            ?: return replyAndClose(output, GENERAL_FAILURE, socket)
 
         output.write(SUCCESS_REPLY)
         output.flush()
@@ -332,12 +398,7 @@ class GwSocksServer(
     }
 
     private fun resolveDnsOverTcp(host: String, query: ByteArray): ByteArray? {
-        val channel = try {
-            transport.openChannel(host, DNS_PORT)
-        } catch (e: Exception) {
-            Log.w(TAG, "DNS-TCP $host channel failed: $e")
-            return null
-        }
+        val channel = openChannel(host, DNS_PORT) ?: return null
         try {
             val chOut = DataOutputStream(channel.outputStream)
             val chIn = DataInputStream(channel.inputStream)
