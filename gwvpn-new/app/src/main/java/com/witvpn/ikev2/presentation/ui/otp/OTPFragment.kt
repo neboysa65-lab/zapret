@@ -96,8 +96,16 @@ class OTPFragment : BaseFragment<FragmentSettingsBinding>(R.layout.fragment_sett
     }
 
     private fun clearUserAndNav() {
-        viewModel.clearEntropyData()
+        // Порядок важен: userId и энтропия лежат в РАЗНЫХ файлах prefs, и запись
+        // в каждый — отдельная транзакция. Если процесс умрёт между ними, то при
+        // прежнем порядке останется «userId есть, энтропии нет» — состояние, из
+        // которого приложение само уже не выходило (splash создаёт энтропию
+        // только когда userId отсутствует), и GW-раздел оставался пустым до
+        // стирания данных приложения. Обратный порядок даёт безопасную половину:
+        // «энтропия есть, userId нет» — splash просто перерегистрирует тот же
+        // deviceId и получает тот же аккаунт.
         removeSessionUserId()
+        viewModel.clearEntropyData()
         try { findNavController().navigate(R.id.action_OTPFragment_to_splashFragment) } catch (_: Exception) {}
     }
 

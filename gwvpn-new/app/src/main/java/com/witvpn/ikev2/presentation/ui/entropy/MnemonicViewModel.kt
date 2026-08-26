@@ -12,6 +12,8 @@ import com.witvpn.ikev2.features.entropy.EntropyUseCase
 import com.witvpn.ikev2.features.entropy.InvalidMnemonic
 import com.witvpn.ikev2.presentation.base.BaseViewModel
 import com.witvpn.ikev2.presentation.utils.EntropyHelper
+import com.witvpn.ikev2.presentation.utils.SharePrefs
+import com.witvpn.ikev2.presentation.utils.putStringPref
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -77,6 +79,12 @@ class MnemonicViewModel @Inject constructor(
                     val param = mutableMapOf<String, Any>()
                     param["deviceId"] = entropyUseCase.pubKey
                     val userId = userRepository.createAnonymousUser(param).id
+                    // Полученный userId сохраняем сразу. Раньше он оставался
+                    // только в памяти: в prefs лежал userId ПРЕЖНЕГО аккаунта
+                    // (или ничего), то есть сессия шла с одним аккаунтом, а
+                    // запросы — с другим. Заодно от него зависит GW-heartbeat в
+                    // MyApp, который без userId просто не отправляется.
+                    userId?.let { putStringPref(SharePrefs.KEY_USER_ID, it) }
                     val userParams = mutableMapOf<String, Any>()
                     userParams["userId"] = userId as Any
                     user = userRepository.profile(userParams)

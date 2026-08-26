@@ -74,16 +74,29 @@ class AppSettings @Inject constructor(
         return sharedPreferences.getString(ENTROPY_PUBKEY_STR, "")!!
     }
 
+    /**
+     * Удаляет энтропию и ВСЕ производные от неё поля.
+     *
+     * Раньше здесь после `remove(ENTROPY_STR)` стоял `clear()`, а он в редакторе
+     * означает «стереть файл prefs целиком». Два следствия, оба скверные:
+     * заодно уничтожалась мнемоника — единственный способ восстановить ключ при
+     * потере ключа Keystore, — и терялись посторонние настройки
+     * (LAST_USER_IS_PREMIUM, счётчик отзыва).
+     *
+     * Производные поля (RSA, PUBKEY) удаляются вместе с энтропией намеренно:
+     * оставшийся pubkey без энтропии — это ровно то состояние, в котором
+     * SplashViewModel считает идентичность существующей и не создаёт её заново.
+     */
     fun clearEntropy() {
-        sharedPreferences.edit {
+        sharedPreferences.edit(commit = true) {
             remove(ENTROPY_STR)
-            clear()
+            remove(ENTROPY_RSA_STR)
+            remove(ENTROPY_PUBKEY_STR)
         }
     }
     fun clearMnemonic() {
-        sharedPreferences.edit {
+        sharedPreferences.edit(commit = true) {
             remove(ENTROPY_MNEMONIC_STR)
-            clear()
         }
     }
 

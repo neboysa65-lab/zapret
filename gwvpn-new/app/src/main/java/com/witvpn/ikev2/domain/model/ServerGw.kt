@@ -18,6 +18,8 @@ data class ServerGw(
     val ipAddress: String? get() = config?.ipAddress ?: id
 
     companion object {
+        private const val TAG = "GwServerDecrypt"
+
         fun decrypt(
             context: android.content.Context,
             metaId: String,
@@ -35,18 +37,34 @@ data class ServerGw(
         ): ServerGw {
             val decrypted = if (eph != null && ct != null && iv != null) {
                 try {
-                    val privHex = GwIdentity.privateKeyHex(context) ?: return ServerGw(
-                        metaId, name, country, countryCode, state,
-                        premium, recommend, priority, status, null
-                    )
+                    val privHex = GwIdentity.privateKeyHex(context)
+                    if (privHex == null) {
+                        // Раньше сюда уходил молчаливый return: список пустел, а
+                        // в логах не было ни строки о причине.
+                        android.util.Log.e(
+                            TAG,
+                            "$metaId: GW-ключ устройства недоступен, конверт не расшифровать"
+                        )
+                        return ServerGw(
+                            metaId, name, country, countryCode, state,
+                            premium, recommend, priority, status, null
+                        )
+                    }
                     val privKey = GwCrypto.normalizePrivateKey(privHex)
                     TunnelConfig.fromJson(
                         com.witvpn.gw.crypto.GwCrypto.decryptConfigEnvelope(privKey, eph, ct, iv)
                     )
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    // Обычно это несовпадение ключей: сервер зашифровал на другой
+                    // pubkey, чем тот, чей приватный ключ лежит на устройстве.
+                    android.util.Log.w(TAG, "$metaId: расшифровка конверта не удалась: $e")
                     null
                 }
             } else {
+                android.util.Log.w(
+                    TAG,
+                    "$metaId: сервер прислал ноду без конверта (eph/ct/iv), пропускаем"
+                )
                 null
             }
             return ServerGw(

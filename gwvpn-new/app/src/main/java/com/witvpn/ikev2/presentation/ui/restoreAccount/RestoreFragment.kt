@@ -14,8 +14,6 @@ import com.witvpn.ikev2.presentation.base.BaseFragment
 import com.witvpn.ikev2.presentation.ui.ShareViewModel
 import com.witvpn.ikev2.presentation.ui.entropy.MnemonicView
 import com.witvpn.ikev2.presentation.ui.entropy.MnemonicViewModel
-import com.witvpn.ikev2.presentation.utils.SharePrefs
-import com.witvpn.ikev2.presentation.utils.removePref
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -162,7 +160,11 @@ class RestoreFragment : BaseFragment<FragmentRestoreBinding>(R.layout.fragment_r
 
     override fun getViewContext() = requireContext()
     override fun reloadUser() {
-        removePref(SharePrefs.KEY_USER_ID)
+        // Раньше здесь стоял removePref(KEY_USER_ID) — он стирал userId, который
+        // восстановление только что получило с сервера. Дальше переход идёт сразу
+        // на mainFragment, минуя splash, поэтому никто его не восстанавливал: вся
+        // сессия работала с userId только в памяти, а GW-heartbeat в MyApp читает
+        // его из prefs и молчал. userId уже сохранён во ViewModel.
         shareViewModel.setUser(viewModel.user)
         try { findNavController().navigate(R.id.mainFragment) } catch (_: Exception) {}
     }
