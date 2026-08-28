@@ -1,0 +1,2484 @@
+diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
+index 368ce7f..6bc7106 100644
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -110,6 +110,10 @@ dependencies {
+ 
+     // Core library desugaring for flutter_local_notifications (java.time backport)
+     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
++
++    // Separate Hysteria2 engine (ported from gwapk). VLESS keeps using
++    // flutter_v2ray_plus; only Hysteria2 servers are routed through this module.
++    implementation(project(":hysteria2_engine"))
+ }
+ 
+ flutter {
+diff --git a/android/app/src/main/kotlin/app/vless/vpn/MainActivity.kt b/android/app/src/main/kotlin/app/vless/vpn/MainActivity.kt
+index c1b045a..da27bf1 100644
+--- a/android/app/src/main/kotlin/app/vless/vpn/MainActivity.kt
++++ b/android/app/src/main/kotlin/app/vless/vpn/MainActivity.kt
+@@ -1,5 +1,135 @@
+ package app.vless.vpn
+ 
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++import android.content.IntentFilter
++import android.os.Build
+ import io.flutter.embedding.android.FlutterActivity
++import io.flutter.embedding.engine.FlutterEngine
++import io.flutter.plugin.common.EventChannel
++import io.flutter.plugin.common.MethodChannel
++import io.github.vyomtunnel.sdk.VyomState
++import io.github.vyomtunnel.sdk.VyomVpnManager
+ 
+-class MainActivity : FlutterActivity()
++/**
++ * Hosts the Flutter UI and bridges the separate Hysteria2 engine
++ * (ported from gwapk's vyom-tun-sdk) to Dart.
++ *
++ * The existing VLESS/VMESS path keeps using flutter_v2ray_plus untouched.
++ * Only Hysteria2 servers are routed here via the [METHOD_CHANNEL].
++ */
++class MainActivity : FlutterActivity() {
++
++    companion object {
++        private const val METHOD_CHANNEL = "app.vless.vpn/hysteria2"
++        private const val EVENT_CHANNEL = "app.vless.vpn/hysteria2/status"
++    }
++
++    private var statusSink: EventChannel.EventSink? = null
++    private var stateReceiver: BroadcastReceiver? = null
++
++    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
++        super.configureFlutterEngine(flutterEngine)
++
++        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
++            .setMethodCallHandler { call, result ->
++                when (call.method) {
++                    "initialize" -> {
++                        VyomVpnManager.initialize(applicationContext)
++                        VyomVpnManager.setNotificationConfig(
++                            VyomVpnManager.VyomNotificationConfig(
++                                title = "Vless VPN",
++                                content = "Hysteria2 connection is active",
++                                iconResId = applicationInfo.icon.takeIf { it != 0 },
++                                channelName = "VPN Service",
++                            )
++                        )
++                        result.success(true)
++                    }
++
++                    "connect" -> {
++                        val link = call.argument<String>("url")
++                        if (link.isNullOrEmpty()) {
++                            result.error("BAD_ARGS", "Missing hysteria2 url", null)
++                        } else {
++                            // Handles VpnService.prepare() + start internally.
++                            VyomVpnManager.connectWithPermission(this, link)
++                            result.success(true)
++                        }
++                    }
++
++                    "disconnect" -> {
++                        VyomVpnManager.stop(applicationContext)
++                        result.success(true)
++                    }
++
++                    "isConnected" ->
++                        result.success(VyomVpnManager.currentState == VyomState.CONNECTED)
++
++                    "isPermissionGranted" ->
++                        result.success(VyomVpnManager.isPermissionGranted(applicationContext))
++
++                    else -> result.notImplemented()
++                }
++            }
++
++        EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
++            .setStreamHandler(object : EventChannel.StreamHandler {
++                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
++                    statusSink = events
++                    registerStateReceiver()
++                    // Emit the current state immediately so Dart is in sync.
++                    events?.success("STATE:${VyomVpnManager.currentState.name}")
++                }
++
++                override fun onCancel(arguments: Any?) {
++                    unregisterStateReceiver()
++                    statusSink = null
++                }
++            })
++    }
++
++    private fun registerStateReceiver() {
++        if (stateReceiver != null) return
++        val receiver = object : BroadcastReceiver() {
++            override fun onReceive(context: Context?, intent: Intent?) {
++                when (intent?.action) {
++                    VyomVpnManager.ACTION_VPN_STATE -> {
++                        val state = intent.getStringExtra("STATE") ?: return
++                        statusSink?.success("STATE:$state")
++                    }
++                    VyomVpnManager.ACTION_VPN_TRAFFIC -> {
++                        // Cumulative totals (bytes) since tunnel start.
++                        val up = intent.getLongExtra("UP", 0L)
++                        val down = intent.getLongExtra("DOWN", 0L)
++                        statusSink?.success("TRAFFIC:$up:$down")
++                    }
++                }
++            }
++        }
++        val filter = IntentFilter().apply {
++            addAction(VyomVpnManager.ACTION_VPN_STATE)
++            addAction(VyomVpnManager.ACTION_VPN_TRAFFIC)
++        }
++        val flags =
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_NOT_EXPORTED else 0
++        registerReceiver(receiver, filter, flags)
++        stateReceiver = receiver
++    }
++
++    private fun unregisterStateReceiver() {
++        stateReceiver?.let {
++            try {
++                unregisterReceiver(it)
++            } catch (_: IllegalArgumentException) {
++            }
++        }
++        stateReceiver = null
++    }
++
++    override fun onDestroy() {
++        unregisterStateReceiver()
++        super.onDestroy()
++    }
++}
+diff --git a/android/hysteria2_engine/build.gradle.kts b/android/hysteria2_engine/build.gradle.kts
+new file mode 100644
+index 0000000..c8aa3cf
+--- /dev/null
++++ b/android/hysteria2_engine/build.gradle.kts
+@@ -0,0 +1,63 @@
++plugins {
++    id("com.android.library")
++    id("org.jetbrains.kotlin.android")
++}
++
++android {
++    namespace = "io.github.vyomtunnel.sdk"
++    compileSdk = 36
++    ndkVersion = "27.0.12077973"
++
++    defaultConfig {
++        // Kept low so it never exceeds the host app's minSdk (library floor).
++        // All API-specific calls in the engine are guarded with Build.VERSION checks.
++        minSdk = 21
++
++        // Match the host app's supported ABIs. The prebuilt Hysteria2 native
++        // libraries (libxray.so, libhev-socks5-tunnel.so) ship for exactly these.
++        ndk {
++            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
++        }
++
++        consumerProguardFiles("consumer-rules.pro")
++    }
++
++    buildTypes {
++        release {
++            isMinifyEnabled = false
++            proguardFiles(
++                getDefaultProguardFile("proguard-android-optimize.txt"),
++                "proguard-rules.pro",
++            )
++        }
++    }
++
++    compileOptions {
++        sourceCompatibility = JavaVersion.VERSION_17
++        targetCompatibility = JavaVersion.VERSION_17
++    }
++
++    kotlinOptions {
++        jvmTarget = JavaVersion.VERSION_17.toString()
++    }
++
++    externalNativeBuild {
++        cmake {
++            path = file("src/main/cpp/CMakeLists.txt")
++            version = "3.22.1"
++        }
++    }
++
++    sourceSets {
++        getByName("main") {
++            jniLibs.srcDirs("src/main/jniLibs")
++        }
++    }
++}
++
++dependencies {
++    implementation("org.jetbrains.kotlin:kotlin-stdlib")
++    implementation("androidx.core:core-ktx:1.13.1")
++    implementation("androidx.appcompat:appcompat:1.7.0")
++    implementation("androidx.activity:activity-ktx:1.9.3")
++}
+diff --git a/android/hysteria2_engine/consumer-rules.pro b/android/hysteria2_engine/consumer-rules.pro
+new file mode 100644
+index 0000000..2835e8e
+--- /dev/null
++++ b/android/hysteria2_engine/consumer-rules.pro
+@@ -0,0 +1,33 @@
++# 1. Keep the Native Engine (JNI Linkage)
++# This prevents renaming the class or the native methods
++-keep class io.github.vyomtunnel.core.NativeEngine {
++    native <methods>;
++    <methods>;
++    *;
++}
++
++# 2. Keep the TProxyService (Hardcoded in Hev-Tun C code)
++# The C code specifically searches for "hev/htproxy/TProxyService"
++-keep class hev.htproxy.TProxyService {
++    native <methods>;
++    *;
++}
++
++# 3. Keep SDK Models and Enums
++# These are used for broadcasts and callbacks
++-keep class io.github.vyomtunnel.sdk.VyomState { *; }
++-keep class io.github.vyomtunnel.sdk.VyomVpnManager$VyomListener { *; }
++-keep class io.github.vyomtunnel.sdk.VyomVpnManager$VyomNotificationConfig { *; }
++
++# 4. Keep JSON and Asset Utils
++# Reflection might be used during JSON parsing
++-keep class io.github.vyomtunnel.sdk.utils.** { *; }
++
++# 5. General JNI protection
++-keepclasseswithmembernames class * {
++    native <methods>;
++}
++
++# 6. Suppress Xray/Go internal warnings
++-dontwarn com.xtls.**
++
+diff --git a/android/hysteria2_engine/proguard-rules.pro b/android/hysteria2_engine/proguard-rules.pro
+new file mode 100644
+index 0000000..481bb43
+--- /dev/null
++++ b/android/hysteria2_engine/proguard-rules.pro
+@@ -0,0 +1,21 @@
++# Add project specific ProGuard rules here.
++# You can control the set of applied configuration files using the
++# proguardFiles setting in build.gradle.
++#
++# For more details, see
++#   http://developer.android.com/guide/developing/tools/proguard.html
++
++# If your project uses WebView with JS, uncomment the following
++# and specify the fully qualified class name to the JavaScript interface
++# class:
++#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
++#   public *;
++#}
++
++# Uncomment this to preserve the line number information for
++# debugging stack traces.
++#-keepattributes SourceFile,LineNumberTable
++
++# If you keep the line number information, uncomment this to
++# hide the original source file name.
++#-renamesourcefileattribute SourceFile
+\ No newline at end of file
+diff --git a/android/hysteria2_engine/src/main/AndroidManifest.xml b/android/hysteria2_engine/src/main/AndroidManifest.xml
+new file mode 100644
+index 0000000..c5ad113
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/AndroidManifest.xml
+@@ -0,0 +1,34 @@
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns:android="http://schemas.android.com/apk/res/android">
++
++    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
++    <uses-permission android:name="android.permission.INTERNET" />
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
++
++    <application>
++        <activity
++            android:name=".VyomPermissionActivity"
++            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
++            android:exported="false" />
++
++        <service
++            android:name=".VyomVpnService"
++            android:exported="false"
++            android:foregroundServiceType="specialUse"
++            android:label="Hysteria2 VPN"
++            android:permission="android.permission.BIND_VPN_SERVICE"
++            android:process=":hysteria2_process">
++            <intent-filter>
++                <action android:name="android.net.VpnService" />
++            </intent-filter>
++            <meta-data
++                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
++                android:value="true" />
++            <property
++                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
++                android:value="vpn" />
++        </service>
++    </application>
++
++</manifest>
+diff --git a/android/hysteria2_engine/src/main/cpp/CMakeLists.txt b/android/hysteria2_engine/src/main/cpp/CMakeLists.txt
+new file mode 100644
+index 0000000..d86861b
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/cpp/CMakeLists.txt
+@@ -0,0 +1,24 @@
++cmake_minimum_required(VERSION 3.10.2)
++project("vyom-v2ray")
++set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
++
++# 1. Tell the linker WHERE to look for the .so files (the search path)
++# We use the short names: hysteria2core and hev-socks5-tunnel
++link_directories(${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI})
++
++# 2. Create your bridge library
++add_library(vyom-v2ray SHARED vyom-bridge.cpp)
++
++# 3. Find the Android logging library
++find_library(log-lib log)
++
++# 4. LINK BY SHORT NAME
++# The Hysteria2-capable Xray core is shipped as libhysteria2core.so
++# (renamed from gwapk's libxray.so, SONAME patched to match) so it can
++# never collide with flutter_v2ray_plus's own libxray.so inside the APK.
++target_link_libraries(
++        vyom-v2ray
++        hysteria2core
++        hev-socks5-tunnel
++        ${log-lib}
++)
+diff --git a/android/hysteria2_engine/src/main/cpp/vyom-bridge.cpp b/android/hysteria2_engine/src/main/cpp/vyom-bridge.cpp
+new file mode 100644
+index 0000000..3d8ea4c
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/cpp/vyom-bridge.cpp
+@@ -0,0 +1,47 @@
++#include <jni.h>
++#include <android/log.h>
++#include <unistd.h>
++#include <stdio.h>
++
++extern "C" {
++int XrayMain(const char *configJson, const char *assetPath);
++void XrayStop();
++char* XrayTestConfig(const char *configJson, const char *assetPath);
++void XrayFreeString(char* str);
++
++void hev_socks5_tunnel_main(const char *config_path, int fd);
++void hev_socks5_tunnel_stop();
++}
++
++extern "C" JNIEXPORT jint JNICALL
++Java_io_github_vyomtunnel_core_NativeEngine_startXray(JNIEnv *env, jobject thiz, jstring config, jstring asset_path) {
++    const char *nativeConfig = env->GetStringUTFChars(config, 0);
++    const char *nativePath = env->GetStringUTFChars(asset_path, 0);
++    int result = XrayMain(nativeConfig, nativePath);
++    env->ReleaseStringUTFChars(config, nativeConfig);
++    env->ReleaseStringUTFChars(asset_path, nativePath);
++    return result;
++}
++
++extern "C" JNIEXPORT void JNICALL
++Java_io_github_vyomtunnel_core_NativeEngine_stopXray(JNIEnv *env, jobject thiz) {
++    XrayStop();
++}
++
++extern "C" JNIEXPORT jstring JNICALL
++Java_io_github_vyomtunnel_core_NativeEngine_validateConfig(JNIEnv *env, jobject thiz, jstring config, jstring asset_path) {
++    const char *nativeConfig = env->GetStringUTFChars(config, 0);
++    const char *nativePath = env->GetStringUTFChars(asset_path, 0); // Get the path string
++
++    char *error = XrayTestConfig(nativeConfig, nativePath);
++
++    env->ReleaseStringUTFChars(config, nativeConfig);
++    env->ReleaseStringUTFChars(asset_path, nativePath); // Release path string
++
++    if (error == nullptr) return nullptr;
++    jstring result = env->NewStringUTF(error);
++
++    XrayFreeString(error);
++    return result;
++}
++
+diff --git a/android/hysteria2_engine/src/main/java/hev/htproxy/TProxyService.kt b/android/hysteria2_engine/src/main/java/hev/htproxy/TProxyService.kt
+new file mode 100644
+index 0000000..dea9c01
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/java/hev/htproxy/TProxyService.kt
+@@ -0,0 +1,13 @@
++package hev.htproxy
++
++import android.net.VpnService
++
++/**
++ * This class must exist because the hev-socks5-tunnel native library
++ * looks for it during initialization (JNI_OnLoad).
++ */
++open class TProxyService : VpnService() {
++    external fun TProxyStartService(configPath: String, fd: Int)
++    external fun TProxyStopService()
++    external fun TProxyGetStats(): LongArray
++}
+\ No newline at end of file
+diff --git a/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/core/NativeEngine.kt b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/core/NativeEngine.kt
+new file mode 100644
+index 0000000..1313bbe
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/core/NativeEngine.kt
+@@ -0,0 +1,32 @@
++package io.github.vyomtunnel.core
++
++import android.util.Log
++
++internal object NativeEngine {
++    private const val TAG = "NativeEngine"
++
++    var isLoaded = false
++        private set
++
++    init {
++        try {
++            // Hysteria2-capable Xray core, renamed from libxray.so so it never
++            // collides with flutter_v2ray_plus's own libxray.so in the APK.
++            System.loadLibrary("hysteria2core")
++            Log.i(TAG, "Loaded hysteria2core")
++            System.loadLibrary("hev-socks5-tunnel")
++            Log.i(TAG, "Loaded hev-socks5-tunnel")
++            System.loadLibrary("vyom-v2ray")
++            Log.i(TAG, "Loaded vyom-v2ray")
++            isLoaded = true
++        } catch (e: UnsatisfiedLinkError) {
++            Log.e(TAG, "Failed to load native library", e)
++        }
++    }
++
++    external fun startXray(config: String, assetPath: String): Int
++
++    external fun stopXray()
++
++    external fun validateConfig(config: String, assetPath: String): String?
++}
+\ No newline at end of file
+diff --git a/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomPermissionActivity.kt b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomPermissionActivity.kt
+new file mode 100644
+index 0000000..a449ad5
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomPermissionActivity.kt
+@@ -0,0 +1,23 @@
++package io.github.vyomtunnel.sdk
++
++import android.net.VpnService
++import android.os.Bundle
++import androidx.activity.result.contract.ActivityResultContracts
++import androidx.appcompat.app.AppCompatActivity
++
++class VyomPermissionActivity : AppCompatActivity() {
++    private val vpnRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
++        if (it.resultCode == RESULT_OK) {
++            // Permission granted, trigger the last saved config
++            val config = VyomVpnManager.getLastConfig(this)
++            if (config != null) VyomVpnManager.start(this, config)
++        }
++        finish()
++    }
++
++    override fun onCreate(savedInstanceState: Bundle?) {
++        super.onCreate(savedInstanceState)
++        val intent = VpnService.prepare(this)
++        if (intent != null) vpnRequest.launch(intent) else finish()
++    }
++}
+\ No newline at end of file
+diff --git a/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomState.kt b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomState.kt
+new file mode 100644
+index 0000000..c61daf8
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomState.kt
+@@ -0,0 +1,10 @@
++package io.github.vyomtunnel.sdk
++
++enum class VyomState {
++    IDLE,
++    CONNECTING,
++    CONNECTED,
++    STOPPING,
++    DISCONNECTED,
++    ERROR
++}
+\ No newline at end of file
+diff --git a/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomVpnManager.kt b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomVpnManager.kt
+new file mode 100644
+index 0000000..403af02
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomVpnManager.kt
+@@ -0,0 +1,332 @@
++package io.github.vyomtunnel.sdk
++
++import android.app.Activity
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++import android.content.IntentFilter
++import android.net.VpnService
++import android.os.Build
++import android.util.Log
++import android.widget.Toast
++import androidx.annotation.RequiresApi
++import io.github.vyomtunnel.core.NativeEngine
++import io.github.vyomtunnel.sdk.utils.AssetUtils
++import io.github.vyomtunnel.sdk.utils.LinkParser
++
++object VyomVpnManager {
++
++    private const val TAG = "VyomVpnManager"
++
++    // Broadcast Actions
++    const val ACTION_VPN_STATE = "io.github.vyomtunnel.VPN_STATE"
++    const val ACTION_VPN_TRAFFIC = "io.github.vyomtunnel.VPN_TRAFFIC"
++
++    // Persistence Keys
++    private const val PREFS_NAME = "vyom_vpn_prefs"
++    private const val KEY_LAST_CONFIG = "last_config"
++    private const val KEY_VPN_ALIVE = "vpn_should_be_running"
++    private const val KEY_AUTO_RECONNECT = "auto_reconnect_on_network"
++    private const val KEY_EXCLUDED_APPS = "excluded_apps_list"
++    private const val KEY_ALLOWED_APPS = "allowed_apps_list"
++
++    private var isInitialized = false
++    private var internalReceiver: BroadcastReceiver? = null
++    private var vpnListener: VyomListener? = null
++    private var notificationConfig = VyomNotificationConfig()
++    private val excludedApps = mutableSetOf<String>()
++    private val allowedApps = mutableSetOf<String>()
++    private const val KEY_KILL_SWITCH = "kill_switch_enabled"
++    const val ACTION_NO_INTERNET = "io.github.vyomtunnel.NO_INTERNET"
++
++    var currentState: VyomState = VyomState.IDLE
++        private set
++
++    /**
++     * Interface for the host application to receive updates.
++     */
++    interface VyomListener {
++        fun onStateChanged(state: VyomState)
++        fun onTrafficUpdate(up: Long, down: Long)
++    }
++
++    /**
++     * Data class for UI branding of the VPN notification.
++     */
++    data class VyomNotificationConfig(
++        val title: String? = null,
++        val content: String? = null,
++        val iconResId: Int? = null,
++        val channelName: String = "VPN Service"
++    )
++
++    // --- CORE API ---
++
++    fun initialize(context: Context) {
++        if (isInitialized) return
++        try {
++            AssetUtils.copyAssets(context)
++            // NOTE: Native libraries (libxray.so, libhev-socks5-tunnel.so, libvyom-v2ray.so)
++            // are intentionally NOT loaded here. They are loaded lazily by NativeEngine's
++            // init block when first accessed, which happens inside VyomVpnService that runs
++            // in the separate ":xray_process". Loading the 44 MB libxray.so (Go 1.25 runtime)
++            // in the main process at app startup causes a native crash on some devices
++            // (e.g. Honor 8X / Honor 30i / Kirin 710 + EMUI 9-10) — SIGSEGV inside the Go
++            // runtime init cannot be caught by any Java try/catch. Deferring the load to
++            // the VPN service process keeps the main app stable.
++            loadSavedExclusions(context)
++            loadSavedAllowed(context)
++            isInitialized = true
++            Log.i(TAG, "SDK initialized successfully")
++        } catch (e: Exception) {
++            Log.e(TAG, "SDK initialization failed", e)
++        }
++    }
++
++    fun connect(context: Context, linkOrJson: String): String? {
++        return try {
++            val finalConfig = if (linkOrJson.trim().startsWith("{")) {
++                linkOrJson
++            } else {
++                LinkParser.parse(linkOrJson)
++            }
++
++            // Note: validateConfig is skipped here to avoid ANR on main thread.
++            // Validation will happen inside NativeEngine.startXray in the background thread.
++            start(context, finalConfig)
++            null // Success
++        } catch (e: Exception) {
++            e.message ?: "Unknown error"
++        }
++    }
++
++    fun connectWithPermission(activity: Activity, input: String) {
++        val finalConfig = try {
++            if (input.trim().startsWith("{")) input
++            else LinkParser.parse(input)
++        } catch (e: Exception) {
++            Toast.makeText(activity, "Invalid link or JSON", Toast.LENGTH_LONG).show()
++            return
++        }
++
++        // NOTE: validateConfig is deliberately NOT called here. It would load
++        // the ~44 MB native core into the MAIN process, which crashes on some
++        // devices (see the note in initialize()). Real validation happens in
++        // NativeEngine.startXray inside the separate :hysteria2_process.
++
++        val intent = VpnService.prepare(activity)
++        if (intent != null) {
++            saveConfig(activity, finalConfig)
++            activity.startActivity(
++                Intent(activity, VyomPermissionActivity::class.java)
++            )
++        } else {
++            start(activity, finalConfig)
++        }
++    }
++
++    fun start(context: Context, configJson: String) {
++        saveConfig(context, configJson)
++        setVpnShouldRun(context, true)
++
++        val intent = Intent(context, VyomVpnService::class.java).apply {
++            action = "START_VPN"
++            putExtra(VyomVpnService.EXTRA_CONFIG, configJson)
++            putExtra(VyomVpnService.NOTIF_TITLE, notificationConfig.title)
++            putExtra(VyomVpnService.NOTIF_CONTENT, notificationConfig.content)
++            putExtra(VyomVpnService.NOTIF_ICON, notificationConfig.iconResId ?: 0)
++            putExtra(VyomVpnService.NOTIF_CHANNEL, notificationConfig.channelName)
++            // The service runs in a separate process (:xray_process) where a
++            // cached SharedPreferences instance may be stale — always ship the
++            // fresh split-tunneling lists with the start command.
++            putStringArrayListExtra(
++                VyomVpnService.EXTRA_EXCLUDED_APPS,
++                ArrayList(getExcludedApps(context))
++            )
++            putStringArrayListExtra(
++                VyomVpnService.EXTRA_ALLOWED_APPS,
++                ArrayList(getAllowedApps(context))
++            )
++        }
++
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            context.startForegroundService(intent)
++        } else {
++            context.startService(intent)
++        }
++    }
++
++    fun stop(context: Context) {
++        setVpnShouldRun(context, false)
++        val intent = Intent(context, VyomVpnService::class.java).apply {
++            action = "STOP_VPN"
++        }
++        try {
++            context.startService(intent)
++        } catch (e: IllegalStateException) {
++            // App may be in background on Android 8+, service not running
++            Log.w(TAG, "Cannot stop VPN service: ${e.message}")
++        }
++    }
++
++    fun validateConfig(context: Context, config: String): String? {
++        val assetPath = context.filesDir.absolutePath
++        return NativeEngine.validateConfig(config, assetPath)
++    }
++
++    // --- LISTENERS & IPC (Inter-Process Communication) ---
++
++    @RequiresApi(Build.VERSION_CODES.O)
++    fun registerListener(context: Context, listener: VyomListener) {
++        this.vpnListener = listener
++        if (internalReceiver != null) return
++
++        internalReceiver = object : BroadcastReceiver() {
++            override fun onReceive(context: Context?, intent: Intent?) {
++                when (intent?.action) {
++                    ACTION_VPN_STATE -> {
++                        val stateName = intent.getStringExtra("STATE") ?: return
++                        try {
++                            currentState = VyomState.valueOf(stateName)
++                            vpnListener?.onStateChanged(currentState)
++                        } catch (e: IllegalArgumentException) {
++                            Log.w(TAG, "Unknown VPN state: $stateName")
++                        }
++                    }
++                    ACTION_VPN_TRAFFIC -> {
++                        val up = intent.getLongExtra("UP", 0L)
++                        val down = intent.getLongExtra("DOWN", 0L)
++                        vpnListener?.onTrafficUpdate(up, down)
++                    }
++                }
++            }
++        }
++
++        val filter = IntentFilter().apply {
++            addAction(ACTION_VPN_STATE)
++            addAction(ACTION_VPN_TRAFFIC)
++        }
++
++        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0
++        context.registerReceiver(internalReceiver, filter, flags)
++    }
++
++    fun unregisterListener(context: Context) {
++        internalReceiver?.let {
++            try {
++                context.unregisterReceiver(it)
++            } catch (e: IllegalArgumentException) {
++                Log.w(TAG, "Receiver already unregistered")
++            }
++            internalReceiver = null
++        }
++        vpnListener = null
++    }
++
++    // --- APP SELECTION (SPLIT TUNNELING) ---
++
++    fun toggleAppExclusion(context: Context, packageName: String) {
++        if (excludedApps.contains(packageName)) excludedApps.remove(packageName)
++        else excludedApps.add(packageName)
++
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
++            .putStringSet(KEY_EXCLUDED_APPS, HashSet(excludedApps)).apply()
++    }
++
++    /**
++     * Replaces the whole exclusion (split tunneling) set. The host app calls
++     * this right before connecting so the SDK always works with the user's
++     * latest choice.
++     */
++    fun setExcludedApps(context: Context, packages: Set<String>) {
++        excludedApps.clear()
++        excludedApps.addAll(packages)
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
++            .putStringSet(KEY_EXCLUDED_APPS, HashSet(excludedApps)).apply()
++    }
++
++    fun getExcludedApps(context: Context): Set<String> {
++        if (excludedApps.isEmpty()) loadSavedExclusions(context)
++        return excludedApps
++    }
++
++    private fun loadSavedExclusions(context: Context) {
++        val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++            .getStringSet(KEY_EXCLUDED_APPS, emptySet()) ?: emptySet()
++        excludedApps.clear()
++        excludedApps.addAll(saved)
++    }
++
++    /**
++     * Replaces the allow list ("Only selected" split tunneling mode). When the
++     * set is non-empty the VPN routes ONLY these applications through the
++     * tunnel; everything else connects directly. An empty set disables the
++     * allow-list mode. The host app calls this right before connecting so the
++     * SDK always works with the user's latest choice.
++     */
++    fun setAllowedApps(context: Context, packages: Set<String>) {
++        allowedApps.clear()
++        allowedApps.addAll(packages)
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
++            .putStringSet(KEY_ALLOWED_APPS, HashSet(allowedApps)).apply()
++    }
++
++    fun getAllowedApps(context: Context): Set<String> {
++        if (allowedApps.isEmpty()) loadSavedAllowed(context)
++        return allowedApps
++    }
++
++    private fun loadSavedAllowed(context: Context) {
++        val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++            .getStringSet(KEY_ALLOWED_APPS, emptySet()) ?: emptySet()
++        allowedApps.clear()
++        allowedApps.addAll(saved)
++    }
++
++    // --- DIAGNOSTICS & HELPERS ---
++
++    fun setNotificationConfig(config: VyomNotificationConfig) {
++        this.notificationConfig = config
++    }
++
++    // --- PERSISTENCE HELPERS ---
++
++    private fun saveConfig(context: Context, config: String) {
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
++            .putString(KEY_LAST_CONFIG, config).apply()
++    }
++
++    private fun setVpnShouldRun(context: Context, shouldRun: Boolean) {
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
++            .putBoolean(KEY_VPN_ALIVE, shouldRun).apply()
++    }
++
++    fun getLastConfig(context: Context): String? =
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_CONFIG, null)
++
++    fun wasVpnRunning(context: Context): Boolean =
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_VPN_ALIVE, false)
++
++    fun setKillSwitch(context: Context, enabled: Boolean) {
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++            .edit().putBoolean(KEY_KILL_SWITCH, enabled).apply()
++    }
++
++    fun isKillSwitchEnabled(context: Context): Boolean {
++        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++            .getBoolean(KEY_KILL_SWITCH, false)
++    }
++
++    fun isPermissionGranted(context: Context): Boolean {
++        return android.net.VpnService.prepare(context) == null
++    }
++
++    fun setAutoReconnectEnabled(context: Context, enabled: Boolean) {
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++            .edit().putBoolean(KEY_AUTO_RECONNECT, enabled).apply()
++    }
++
++    fun isAutoReconnectEnabled(context: Context): Boolean =
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++            .getBoolean(KEY_AUTO_RECONNECT, false)
++}
+\ No newline at end of file
+diff --git a/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomVpnService.kt b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomVpnService.kt
+new file mode 100644
+index 0000000..88516cd
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/VyomVpnService.kt
+@@ -0,0 +1,455 @@
++package io.github.vyomtunnel.sdk
++
++import android.app.Notification
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.content.Context
++import android.content.Intent
++
++import android.net.ConnectivityManager
++import android.net.Network
++import android.net.NetworkCapabilities
++import android.net.NetworkRequest
++import android.net.VpnService
++import android.os.Build
++import android.os.ParcelFileDescriptor
++import android.util.Log
++import androidx.annotation.RequiresApi
++import hev.htproxy.TProxyService
++import io.github.vyomtunnel.core.NativeEngine
++import java.io.File
++import java.util.Timer
++import java.util.TimerTask
++import java.util.concurrent.locks.ReentrantLock
++import kotlin.concurrent.thread
++
++class VyomVpnService : TProxyService() {
++
++    companion object {
++        private const val TAG = "VyomVpnService"
++        private const val NOTIFICATION_CHANNEL_ID = "vpn_service"
++        private const val NOTIFICATION_ID = 1
++        private const val DEFAULT_MTU = 1280
++        private const val LOCAL_ADDRESS = "172.19.0.1"
++        private const val BRIDGE_PORT = 20808
++        private const val BRIDGE_ADDRESS = "127.0.0.1"
++
++        // Intent Keys
++        const val EXTRA_CONFIG = "EXTRA_CONFIG"
++        const val EXTRA_EXCLUDED_APPS = "EXTRA_EXCLUDED_APPS"
++        const val EXTRA_ALLOWED_APPS = "EXTRA_ALLOWED_APPS"
++        const val NOTIF_TITLE = "NOTIF_TITLE"
++        const val NOTIF_CONTENT = "NOTIF_CONTENT"
++        const val NOTIF_ICON = "NOTIF_ICON"
++        const val NOTIF_CHANNEL = "NOTIF_CHANNEL"
++    }
++
++    private var statsTimer: Timer? = null
++    private var lastUp: Long = 0
++    private var lastDown: Long = 0
++    private var tunInterface: ParcelFileDescriptor? = null
++    private var healthCheckTimer: Timer? = null
++    private var lastTotalRx: Long = 0
++    private var noDataCount = 0
++    private val tunnelLock = ReentrantLock()
++
++    private val connectivityManager by lazy {
++        getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
++    }
++
++    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
++        override fun onAvailable(network: Network) {
++            super.onAvailable(network)
++            if (!VyomVpnManager.isAutoReconnectEnabled(this@VyomVpnService)) {
++                Log.i(TAG, "Auto-reconnect disabled by user")
++                return
++            }
++
++            if (!VyomVpnManager.wasVpnRunning(this@VyomVpnService)) {
++                Log.i(TAG, "VPN not marked alive, skipping reconnect")
++                return
++            }
++
++            if (VyomVpnManager.currentState != VyomState.CONNECTED) return
++
++            val config = VyomVpnManager.getLastConfig(this@VyomVpnService) ?: return
++
++            Log.i(TAG, "Network changed → restarting Xray")
++
++            NativeEngine.stopXray()
++            if (NativeEngine.isLoaded) {
++                NativeEngine.startXray(config, filesDir.absolutePath)
++            }
++        }
++
++        override fun onLost(network: Network) {
++            super.onLost(network)
++            Log.w(TAG, "Network connection lost")
++        }
++    }
++
++    @RequiresApi(Build.VERSION_CODES.O)
++    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
++        setupForegroundService(intent)
++
++        when (intent?.action) {
++            "START_VPN" -> {
++                val config = intent.getStringExtra(EXTRA_CONFIG) ?: ""
++                // Fresh split-tunneling lists from the caller process; fall back
++                // to persisted prefs when absent (e.g. system restart).
++                val excludedApps = intent.getStringArrayListExtra(EXTRA_EXCLUDED_APPS)?.toSet()
++                val allowedApps = intent.getStringArrayListExtra(EXTRA_ALLOWED_APPS)?.toSet()
++                if (config.isNotEmpty()) {
++                    startVpn(config, excludedApps, allowedApps)
++                } else {
++                    Log.w(TAG, "START_VPN received with empty config")
++                    stopSelf()
++                }
++            }
++            "STOP_VPN" -> stopVpn()
++            null -> {
++                // Service restarted by system (START_STICKY) with null intent.
++                // Try to resume from last saved config, or stop gracefully.
++                val lastConfig = VyomVpnManager.getLastConfig(this)
++                if (lastConfig != null && VyomVpnManager.wasVpnRunning(this)) {
++                    Log.i(TAG, "Service restarted by system, resuming VPN")
++                    startVpn(lastConfig)
++                } else {
++                    Log.i(TAG, "Service restarted by system, no config to resume — stopping")
++                    stopSelf()
++                }
++            }
++        }
++        return START_STICKY
++    }
++
++    private fun startVpn(
++        xrayConfig: String,
++        excludedAppsOverride: Set<String>? = null,
++        allowedAppsOverride: Set<String>? = null
++    ) {
++        val assetPath = filesDir.absolutePath
++        Log.i("VyomVPN", "=== START VPN ===")
++        notifyStatus(VyomState.CONNECTING)
++
++        thread(name = "VyomStartup") {
++            try {
++                if (!NativeEngine.isLoaded) {
++                    Log.e("VyomVPN", "Native libraries not loaded, cannot start VPN")
++                    notifyStatus(VyomState.ERROR)
++                    return@thread
++                }
++
++                NativeEngine.stopXray()
++                try { TProxyStopService() } catch (_: UnsatisfiedLinkError) {}
++                Thread.sleep(300)
++
++                val result = NativeEngine.startXray(xrayConfig, assetPath)
++                Log.i("VyomVPN", "Xray started: $result")
++                Thread.sleep(1000)
++
++                val builder = Builder()
++                    .setSession("VlessVPN")
++                    .setMtu(DEFAULT_MTU)
++                    .addAddress(LOCAL_ADDRESS, 30)
++                    .addRoute("0.0.0.0", 0)
++                    .addDnsServer("8.8.8.8")
++                    .addDnsServer("1.1.1.1")
++                    .allowFamily(android.system.OsConstants.AF_INET)
++
++                // Per-app routing (Split Tunneling). VpnService.Builder forbids
++                // mixing allowed and disallowed applications, so exactly one of
++                // the two branches below touches the builder. The lists are
++                // filtered to installed packages BEFORE the branch is chosen:
++                // if the allow list turned out to be fully stale we must fall
++                // back to the exclude branch, otherwise the tunnel would
++                // capture every app including our own Xray engine and loop.
++                val allowedApps = resolveInstalled(
++                    (allowedAppsOverride ?: VyomVpnManager.getAllowedApps(this)) - packageName
++                )
++                if (allowedApps.isNotEmpty()) {
++                    // "Only selected" mode: route ONLY these apps through the
++                    // tunnel. Our own package is deliberately NOT in the list —
++                    // Xray's traffic to the proxy server must never re-enter
++                    // the TUN device.
++                    for (pkg in allowedApps) {
++                        try {
++                            builder.addAllowedApplication(pkg)
++                            Log.i("VyomVPN", "SplitTunnel INCLUDE: $pkg")
++                        } catch (e: Exception) {
++                            Log.w("VyomVPN", "Failed to include $pkg", e)
++                        }
++                    }
++                } else {
++                    // Default / "All except selected" mode: everything goes
++                    // through the tunnel except our own package (and the
++                    // user's bypass list, if any).
++                    builder.addDisallowedApplication(packageName)
++                    val excludedApps = excludedAppsOverride ?: VyomVpnManager.getExcludedApps(this)
++                    for (pkg in excludedApps) {
++                        try {
++                            if (pkg != packageName) {
++                                builder.addDisallowedApplication(pkg)
++                                Log.i("VyomVPN", "SplitTunnel EXCLUDE: $pkg")
++                            }
++                        } catch (e: Exception) {
++                            Log.w("VyomVPN", "Failed to exclude $pkg", e)
++                        }
++                    }
++                }
++
++                if (VyomVpnManager.isKillSwitchEnabled(this)) {
++                    builder.setBlocking(true)
++                }
++
++                tunInterface = builder.establish()
++                val fd = tunInterface?.fd ?: throw IllegalStateException("TUN failed")
++                Log.i("VyomVPN", "TUN OK FD=$fd")
++
++                val tunFile = File(filesDir, "tun.yaml")
++                tunFile.writeText(
++                    """
++                socks5:
++                  address: 127.0.0.1
++                  port: 20808
++                  udp: udp
++                tcp:
++                  enabled: true
++                udp:
++                  enabled: true
++                dns:
++                  enabled: true
++                """.trimIndent()
++                )
++
++                TProxyStartService(tunFile.absolutePath, fd)
++
++                startStatsTicker()
++                startHealthGuard() // <-- Enable health check
++                notifyStatus(VyomState.CONNECTED)
++                Log.i("VyomVPN", "=== VPN CONNECTED ===")
++
++            } catch (e: Exception) {
++                Log.e("VyomVPN", "VPN START FAILED", e)
++                notifyStatus(VyomState.ERROR)
++            }
++        }
++    }
++
++    /**
++     * Filters the given package names down to the ones actually installed
++     * right now. addAllowedApplication/addDisallowedApplication throw for
++     * unknown packages, and for the allow list the failure mode is severe:
++     * if not a single allowed app gets registered, Android treats the tunnel
++     * as "capture everything", which must never happen implicitly.
++     */
++    private fun resolveInstalled(packages: Set<String>): Set<String> {
++        if (packages.isEmpty()) return emptySet()
++        return packages.filterTo(LinkedHashSet()) { pkg ->
++            try {
++                packageManager.getApplicationInfo(pkg, 0)
++                true
++            } catch (e: Exception) {
++                Log.w("VyomVPN", "SplitTunnel: package not resolvable, skipping: $pkg")
++                false
++            }
++        }
++    }
++
++    private fun stopVpn() {
++        notifyStatus(VyomState.STOPPING)
++        healthCheckTimer?.cancel()
++
++        thread(start = true, name = "VyomShutdownThread") {
++            try {
++                stopStatsTicker()
++
++                tunnelLock.lock()
++                try {
++                    try { TProxyStopService() } catch (_: UnsatisfiedLinkError) {}
++                    NativeEngine.stopXray()
++                    tunInterface?.close()
++                    tunInterface = null
++                } finally {
++                    tunnelLock.unlock()
++                }
++
++                notifyStatus(VyomState.DISCONNECTED)
++                stopSelf()
++            } catch (e: Exception) {
++                Log.e(TAG, "Vpn stop crash", e)
++                notifyStatus(VyomState.DISCONNECTED)
++                stopSelf()
++            }
++        }
++    }
++
++    private fun startStatsTicker() {
++        statsTimer?.cancel()
++        statsTimer = Timer()
++        statsTimer?.scheduleAtFixedRate(object : TimerTask() {
++            override fun run() {
++                if (!tunnelLock.tryLock()) return@run
++                try {
++                    val stats = this@VyomVpnService.TProxyGetStats()
++                    if (stats.size >= 4) {
++                        val totalUp = stats[1]
++                        val totalDown = stats[3]
++
++                        lastUp = totalUp
++                        lastDown = totalDown
++
++                        notifyTraffic(totalUp, totalDown)
++                    }
++                } catch (_: Exception) {
++                } finally {
++                    tunnelLock.unlock()
++                }
++            }
++        }, 0L, 1000L)
++    }
++
++    private fun stopStatsTicker() {
++        statsTimer?.cancel()
++        statsTimer = null
++        lastUp = 0
++        lastDown = 0
++    }
++
++    private fun setupForegroundService(intent: Intent?) {
++        try {
++            val appLabel = applicationInfo.loadLabel(packageManager).toString()
++            val title = intent?.getStringExtra(NOTIF_TITLE) ?: appLabel
++            val content = intent?.getStringExtra(NOTIF_CONTENT) ?: "VPN is active"
++            val iconRes = intent?.getIntExtra(NOTIF_ICON, 0)?.takeIf { it != 0 }
++                ?: applicationInfo.icon.takeIf { it != 0 }
++                ?: android.R.drawable.ic_lock_lock
++            val channelName = intent?.getStringExtra(NOTIF_CHANNEL) ?: "VPN Service"
++
++            createNotificationChannel(channelName)
++
++            val notificationBuilder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
++            } else {
++                Notification.Builder(this)
++            }
++
++            // Create PendingIntent to open the app
++            val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
++                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
++            }
++            val pendingIntent = if (openAppIntent != null) {
++                android.app.PendingIntent.getActivity(
++                    this, 0, openAppIntent,
++                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
++                )
++            } else null
++
++            val notification = notificationBuilder
++                .setContentTitle(title)
++                .setContentText(content)
++                .setSmallIcon(iconRes)
++                .setContentIntent(pendingIntent) // Add click action
++                .setOngoing(true)
++                .build()
++
++            startForeground(NOTIFICATION_ID, notification)
++        } catch (e: Exception) {
++            Log.e(TAG, "Failed to setup foreground notification", e)
++        }
++    }
++
++    private fun createNotificationChannel(channelName: String) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_LOW)
++            val manager = getSystemService(NotificationManager::class.java)
++            manager?.createNotificationChannel(channel)
++        }
++    }
++
++    override fun onCreate() {
++        super.onCreate()
++        val request = NetworkRequest.Builder()
++            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
++            .build()
++        connectivityManager.registerNetworkCallback(request, networkCallback)
++    }
++
++    override fun onDestroy() {
++        try {
++            stopStatsTicker()
++            connectivityManager.unregisterNetworkCallback(networkCallback)
++            healthCheckTimer?.cancel()
++            try { TProxyStopService() } catch (_: UnsatisfiedLinkError) {}
++            tunInterface?.close()
++            tunInterface = null
++        } catch (_: Exception) {}
++        super.onDestroy()
++    }
++
++    override fun onRevoke() {
++        stopVpn()
++        super.onRevoke()
++    }
++
++    private fun notifyStatus(state: VyomState) {
++        val intent = Intent(VyomVpnManager.ACTION_VPN_STATE)
++        intent.setPackage(packageName)
++        intent.putExtra("STATE", state.name)
++        sendBroadcast(intent)
++    }
++
++    private fun notifyTraffic(up: Long, down: Long) {
++        val intent = Intent(VyomVpnManager.ACTION_VPN_TRAFFIC)
++        intent.setPackage(packageName)
++        intent.putExtra("UP", up)
++        intent.putExtra("DOWN", down)
++        sendBroadcast(intent)
++    }
++
++    private fun startHealthGuard() {
++        healthCheckTimer?.cancel()
++        healthCheckTimer = Timer()
++        healthCheckTimer?.scheduleAtFixedRate(object : TimerTask() {
++            override fun run() {
++                if (!tunnelLock.tryLock()) return@run
++                try {
++                    val stats = this@VyomVpnService.TProxyGetStats()
++                    if (stats.size >= 4) {
++                        val currentTotalRx = stats[3]
++
++                        if (currentTotalRx > 0 && currentTotalRx == lastTotalRx) {
++                            noDataCount++
++                        } else {
++                            noDataCount = 0
++                        }
++
++                        lastTotalRx = currentTotalRx
++
++                        if (noDataCount >= 5) {
++                            Log.w(TAG, "No internet traffic detected for 5s! Restarting tunnel...")
++
++                            try {
++                                val tunFile = File(filesDir, "tun.yaml")
++                                val fd = tunInterface?.fd
++                                if (fd != null) {
++                                    TProxyStopService()
++                                    Thread.sleep(500)
++                                    TProxyStartService(tunFile.absolutePath, fd)
++                                    Log.i(TAG, "Tunnel restarted successfully")
++                                }
++                            } catch (e: Exception) {
++                                Log.e(TAG, "Failed to restart tunnel", e)
++                            }
++
++                            noDataCount = 0
++                        }
++                    }
++                } catch (_: Exception) {
++                } finally {
++                    tunnelLock.unlock()
++                }
++            }
++        }, 5000L, 1000L)
++    }
++}
+\ No newline at end of file
+diff --git a/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/utils/AssetUtils.kt b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/utils/AssetUtils.kt
+new file mode 100644
+index 0000000..98e70ed
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/utils/AssetUtils.kt
+@@ -0,0 +1,25 @@
++package io.github.vyomtunnel.sdk.utils
++
++import android.content.Context
++import java.io.File
++
++object AssetUtils {
++    fun copyAssets(context: Context) {
++        val assets = listOf("geoip.dat", "geosite.dat")
++        assets.forEach { fileName ->
++            val destFile = File(context.filesDir, fileName)
++            if (!destFile.exists()) {
++                try {
++                    context.assets.open(fileName).use { input ->
++                        destFile.outputStream().use { output ->
++                            input.copyTo(output)
++                        }
++                    }
++                } catch (e: Exception) {
++                    // Asset file not found in APK — skip silently
++                    android.util.Log.w("AssetUtils", "Failed to copy asset: $fileName", e)
++                }
++            }
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/utils/LinkParser.kt b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/utils/LinkParser.kt
+new file mode 100644
+index 0000000..caab397
+--- /dev/null
++++ b/android/hysteria2_engine/src/main/java/io/github/vyomtunnel/sdk/utils/LinkParser.kt
+@@ -0,0 +1,171 @@
++package io.github.vyomtunnel.sdk.utils
++
++import android.net.Uri
++import android.util.Log
++import org.json.JSONArray
++import org.json.JSONObject
++
++/**
++ * Hysteria2-only link parser for the ported engine.
++ *
++ * Turns a `hysteria2://` / `hy2://` URI into an Xray JSON config whose local
++ * SOCKS inbound listens on 127.0.0.1:20808 — the exact address the bundled
++ * hev-socks5-tunnel (see VyomVpnService.tun.yaml) forwards TUN traffic to.
++ *
++ * Copied verbatim (minus the VLESS/VMess branches) from the gwapk engine so
++ * the generated config stays byte-for-byte compatible with the prebuilt
++ * libxray.so that implements the Hysteria2 outbound.
++ */
++object LinkParser {
++
++    private const val TAG = "VyomLinkParser"
++
++    fun parse(link: String): String {
++        return try {
++            when {
++                link.startsWith("hysteria2://") || link.startsWith("hy2://") -> parseHysteria2(link)
++                else -> throw IllegalArgumentException(
++                    "Unsupported protocol: this engine only handles Hysteria2"
++                )
++            }
++        } catch (e: Exception) {
++            Log.e(TAG, "Failed to parse link: $link", e)
++            throw e
++        }
++    }
++
++    /**
++     * hysteria2://password@host:port/?sni=...&obfs=salamander&obfs-password=...
++     * Собирает Xray JSON: protocol=hysteria, version=2 (Hysteria2 в libxray).
++     */
++    private fun parseHysteria2(link: String): String {
++        val uri = Uri.parse(link)
++        val password = uri.userInfo.orEmpty()
++        if (password.isEmpty()) {
++            throw IllegalArgumentException("Hysteria2 link missing password")
++        }
++        val host = uri.host.orEmpty()
++        if (host.isEmpty()) {
++            throw IllegalArgumentException("Hysteria2 link missing host")
++        }
++        val port = if (uri.port != -1) uri.port else 443
++        val sni = uri.getQueryParameter("sni")
++            ?: uri.getQueryParameter("peer")
++            ?: host
++        val insecure = uri.getQueryParameter("insecure")
++            ?: uri.getQueryParameter("allowInsecure")
++            ?: ""
++        val allowInsecure = insecure == "1" || insecure.equals("true", ignoreCase = true)
++        val obfs = uri.getQueryParameter("obfs").orEmpty()
++        val obfsPassword = uri.getQueryParameter("obfs-password")
++            ?: uri.getQueryParameter("obfsPassword")
++            ?: ""
++
++        return buildHysteria2ConfigJson(
++            host = host,
++            port = port,
++            auth = password,
++            sni = sni,
++            allowInsecure = allowInsecure,
++            obfs = obfs,
++            obfsPassword = obfsPassword,
++        )
++    }
++
++    /** Xray Hysteria2 outbound (protocol hysteria + version 2). */
++    private fun buildHysteria2ConfigJson(
++        host: String,
++        port: Int,
++        auth: String,
++        sni: String,
++        allowInsecure: Boolean,
++        obfs: String,
++        obfsPassword: String,
++    ): String {
++        val config = JSONObject()
++        config.put("log", JSONObject().put("loglevel", "warning"))
++
++        config.put("dns", JSONObject().apply {
++            put("servers", JSONArray().apply {
++                put("https://1.1.1.1/dns-query")
++                put("https://8.8.8.8/dns-query")
++                put("localhost")
++            })
++            put("queryStrategy", "UseIPv4")
++        })
++
++        config.put("inbounds", JSONArray().put(
++            JSONObject().apply {
++                put("listen", "127.0.0.1")
++                put("port", 20808)
++                put("protocol", "socks")
++                put("settings", JSONObject().apply {
++                    put("auth", "noauth")
++                    put("udp", true)
++                })
++                put("sniffing", JSONObject().apply {
++                    put("enabled", true)
++                    put("destOverride", JSONArray().apply {
++                        put("http")
++                        put("tls")
++                    })
++                })
++            }
++        ))
++
++        val hysteriaSettings = JSONObject().apply {
++            put("version", 2)
++            put("auth", auth)
++            put("udpIdleTimeout", 60)
++            if (obfs.isNotEmpty()) {
++                put("obfs", JSONObject().apply {
++                    put("type", obfs)
++                    if (obfsPassword.isNotEmpty()) put("password", obfsPassword)
++                })
++            }
++        }
++
++        val proxyOutbound = JSONObject().apply {
++            put("tag", "proxy")
++            put("protocol", "hysteria")
++            put("settings", JSONObject().apply {
++                put("version", 2)
++                put("address", host)
++                put("port", port)
++            })
++            put("streamSettings", JSONObject().apply {
++                put("network", "hysteria")
++                put("security", "tls")
++                put("tlsSettings", JSONObject().apply {
++                    put("serverName", sni)
++                    put("allowInsecure", allowInsecure)
++                })
++                put("hysteriaSettings", hysteriaSettings)
++            })
++        }
++
++        val directOutbound = JSONObject().apply {
++            put("tag", "direct")
++            put("protocol", "freedom")
++            put("settings", JSONObject().put("domainStrategy", "UseIP"))
++        }
++
++        config.put("outbounds", JSONArray().apply {
++            put(proxyOutbound)
++            put(directOutbound)
++        })
++
++        config.put("routing", JSONObject().apply {
++            put("domainStrategy", "IPIfNonMatch")
++            put("rules", JSONArray().apply {
++                put(JSONObject().apply {
++                    put("type", "field")
++                    put("network", "tcp,udp")
++                    put("outboundTag", "proxy")
++                })
++            })
++        })
++
++        return config.toString()
++    }
++}
+diff --git a/android/settings.gradle.kts b/android/settings.gradle.kts
+index 502e0de..67f06bf 100644
+--- a/android/settings.gradle.kts
++++ b/android/settings.gradle.kts
+@@ -20,6 +20,7 @@ pluginManagement {
+ plugins {
+     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
+     id("com.android.application") version "8.11.1" apply false
++    id("com.android.library") version "8.11.1" apply false
+     // START: FlutterFire Configuration
+     id("com.google.gms.google-services") version("4.4.4") apply false
+     id("com.google.firebase.crashlytics") version("3.0.2") apply false
+@@ -28,3 +29,4 @@ plugins {
+ }
+ 
+ include(":app")
++include(":hysteria2_engine")
+diff --git a/lib/models/vless_config_model.dart b/lib/models/vless_config_model.dart
+index edaa564..4df02f7 100644
+--- a/lib/models/vless_config_model.dart
++++ b/lib/models/vless_config_model.dart
+@@ -19,7 +19,7 @@ class VlessConfig {
+   final String? rawJsonConfig;
+ 
+   // VLESS specific fields
+-  final String protocol; // 'vless'
++  final String protocol; // 'vless', 'ss', 'hysteria2'
+   final String security; // 'reality', 'tls', etc.
+   final String type; // 'tcp', 'grpc', etc.
+   final String flow; // 'xtls-rprx-vision'
+@@ -29,8 +29,40 @@ class VlessConfig {
+   final String sid; // short id
+   final String spx; // spider x
+ 
++  // Hysteria2 specific fields (handled by the separate ported engine,
++  // NOT by flutter_v2ray_plus). For Hysteria2 [uuid] carries the auth password.
++  final String obfs; // e.g. 'salamander' (empty = none)
++  final String obfsPassword;
++  final bool allowInsecure;
++
+   bool get hasJsonConfig => rawJsonConfig != null && rawJsonConfig!.isNotEmpty;
+ 
++  /// True when this server must be handled by the dedicated Hysteria2 engine.
++  bool get isHysteria2 => protocol == 'hysteria2';
++
++  /// Canonical `hysteria2://` URI reconstructed from the model fields.
++  ///
++  /// This is what gets passed to the native Hysteria2 engine, which rebuilds
++  /// the Xray JSON itself (with the correct local SOCKS port). Works whether
++  /// the server originated from a `hysteria2://` subscription line or from a
++  /// backend Xray JSON config.
++  String get hysteria2Url {
++    final params = <String, String>{};
++    if (sni.isNotEmpty) params['sni'] = sni;
++    if (obfs.isNotEmpty) {
++      params['obfs'] = obfs;
++      if (obfsPassword.isNotEmpty) params['obfs-password'] = obfsPassword;
++    }
++    if (allowInsecure) params['insecure'] = '1';
++
++    final query = params.entries
++        .map((e) => '${e.key}=${Uri.encodeQueryComponent(e.value)}')
++        .join('&');
++    final auth = Uri.encodeComponent(uuid);
++    final base = 'hysteria2://$auth@$address:$port';
++    return query.isEmpty ? base : '$base?$query';
++  }
++
+   /// Clean display name without extra info like "осталось дней"
+   String get cleanName {
+     // Remove everything after | if present
+@@ -61,8 +93,61 @@ class VlessConfig {
+     this.pbk = '',
+     this.sid = '',
+     this.spx = '',
++    this.obfs = '',
++    this.obfsPassword = '',
++    this.allowInsecure = false,
+   });
+ 
++  /// Parse a `hysteria2://` / `hy2://` subscription line.
++  ///
++  /// Official URI form (same as gwapk's VlessParser.parseHysteria2Url):
++  /// hysteria2://password@host:port/?sni=...&obfs=salamander&obfs-password=...#name
++  factory VlessConfig.fromHysteria2Url(String url) {
++    final uri = Uri.parse(url);
++    if (uri.scheme != 'hysteria2' && uri.scheme != 'hy2') {
++      throw Exception('Invalid hysteria2 scheme');
++    }
++
++    final password = Uri.decodeComponent(uri.userInfo);
++    if (password.isEmpty) throw Exception('Hysteria2 URL missing password');
++    final address = uri.host;
++    if (address.isEmpty) throw Exception('Hysteria2 URL missing host');
++    final port = uri.hasPort ? uri.port : 443;
++
++    final q = uri.queryParameters;
++    final sni = q['sni'] ?? q['peer'] ?? address;
++    final insecure = q['insecure'] ?? q['allowInsecure'] ?? '';
++    final allowInsecure =
++        insecure == '1' || insecure.toLowerCase() == 'true';
++    final obfs = q['obfs'] ?? '';
++    final obfsPassword =
++        q['obfs-password'] ?? q['obfsPassword'] ?? q['obfs_password'] ?? '';
++
++    String serverName = 'Hysteria2 $address';
++    if (uri.hasFragment) {
++      serverName = Uri.decodeComponent(uri.fragment).trim();
++    }
++
++    return VlessConfig(
++      id: 'hy2_${password}_${address}_$port',
++      serverName: serverName,
++      address: address,
++      port: port,
++      uuid: password, // auth password lives in the uuid slot
++      originalUrl: url,
++      country: _extractCountry(serverName),
++      flag: _extractFlag(serverName),
++      protocol: 'hysteria2',
++      security: 'tls',
++      type: 'hysteria',
++      sni: sni,
++      fp: q['fp'] ?? q['fingerprint'] ?? '',
++      obfs: obfs,
++      obfsPassword: obfsPassword,
++      allowInsecure: allowInsecure,
++    );
++  }
++
+   /// Build VlessConfig from full Xray JSON config (with optional balancer).
+   /// First `proxy` outbound is used for display address/port and ping.
+   /// Connection always uses the raw JSON, preserving balancer + all outbounds.
+@@ -80,6 +165,49 @@ class VlessConfig {
+     String spx = '';
+ 
+     final outbounds = (map['outbounds'] as List?) ?? const [];
++
++    // Hysteria2 delivered as full Xray JSON (protocol "hysteria" is the
++    // custom-Xray name; version 2 = Hysteria2). Such configs must NOT be fed
++    // to flutter_v2ray_plus — its stock Xray core has no hysteria outbound.
++    // Extract the fields and let the dedicated Hysteria2 engine rebuild its
++    // own config from the canonical hysteria2:// URL.
++    for (final o in outbounds) {
++      if (o is Map<String, dynamic> && o['protocol'] == 'hysteria') {
++        final settings = o['settings'] as Map<String, dynamic>?;
++        final stream = o['streamSettings'] as Map<String, dynamic>?;
++        final hySettings = stream?['hysteriaSettings'] as Map<String, dynamic>?;
++        final tls = stream?['tlsSettings'] as Map<String, dynamic>?;
++        final obfsObj = hySettings?['obfs'] as Map<String, dynamic>?;
++
++        final hyAddress = (settings?['address'] as String?) ?? '';
++        final hyPort = (settings?['port'] as num?)?.toInt() ?? 443;
++        final hyAuth = (hySettings?['auth'] as String?) ?? '';
++        final hySni = (tls?['serverName'] as String?) ?? hyAddress;
++
++        return VlessConfig(
++          id: 'hy2_${hyAuth}_${hyAddress}_$hyPort',
++          serverName: remarks,
++          address: hyAddress,
++          port: hyPort,
++          uuid: hyAuth,
++          originalUrl: '',
++          // rawJsonConfig deliberately NOT kept: its inbound ports target
++          // flutter_v2ray_plus (10808), while the Hysteria2 engine builds its
++          // own JSON with the SOCKS port its TUN layer expects (20808).
++          country: _extractCountry(remarks),
++          flag: _extractFlag(remarks),
++          protocol: 'hysteria2',
++          security: 'tls',
++          type: 'hysteria',
++          sni: hySni,
++          fp: (tls?['fingerprint'] as String?) ?? '',
++          obfs: (obfsObj?['type'] as String?) ?? '',
++          obfsPassword: (obfsObj?['password'] as String?) ?? '',
++          allowInsecure: (tls?['allowInsecure'] as bool?) ?? false,
++        );
++      }
++    }
++
+     Map<String, dynamic>? proxyOut;
+     for (final o in outbounds) {
+       if (o is Map<String, dynamic> &&
+@@ -405,6 +533,9 @@ class VlessConfig {
+     String? pbk,
+     String? sid,
+     String? spx,
++    String? obfs,
++    String? obfsPassword,
++    bool? allowInsecure,
+   }) {
+     return VlessConfig(
+       id: id ?? this.id,
+@@ -427,6 +558,9 @@ class VlessConfig {
+       pbk: pbk ?? this.pbk,
+       sid: sid ?? this.sid,
+       spx: spx ?? this.spx,
++      obfs: obfs ?? this.obfs,
++      obfsPassword: obfsPassword ?? this.obfsPassword,
++      allowInsecure: allowInsecure ?? this.allowInsecure,
+     );
+   }
+ }
+diff --git a/lib/screens/pay_web_screen.dart b/lib/screens/pay_web_screen.dart
+index 38a95f4..7c3d3d3 100644
+--- a/lib/screens/pay_web_screen.dart
++++ b/lib/screens/pay_web_screen.dart
+@@ -3,15 +3,26 @@ import 'dart:async';
+ import 'package:flutter/material.dart';
+ import 'package:provider/provider.dart';
+ import 'package:url_launcher/url_launcher.dart';
++import 'package:webview_flutter/webview_flutter.dart';
+ 
++import '../config/api_config.dart';
+ import '../config/app_theme.dart';
+ import '../providers/auth_provider.dart';
+ 
+-/// Открывает оплату во внешнем браузере (не WebView).
++/// Гибридный флоу оплаты:
+ ///
+-/// WebView на части устройств не умеет схемы банков СБП
+-/// (`bank100000000111://...`) и падает с ERR_UNKNOWN_URL_SCHEME.
+-/// Системный браузер передаёт такие ссылки в приложение банка.
++/// 1. Страница ВЫБОРА ТАРИФА (наш сайт api-vlessvpn-app.vpnhub.xyz/pay?uid=...)
++///    открывается ВНУТРИ приложения через WebView — как это было до
++///    коммита 8a39afe.
++/// 2. Как только сайт перенаправляет на платёжную форму
++///    (https://payment.wata.pro/pay-form/<ID> — любой чужой домен),
++///    ссылка перехватывается и открывается во ВНЕШНЕМ браузере.
++///    Так банковские deep-link'и СБП (bank100000000111://...) обрабатывает
++///    системный браузер, который умеет передавать их в приложение банка —
++///    WebView на части устройств падал на них с ERR_UNKNOWN_URL_SCHEME.
++///
++/// Пока пользователь платит, экран поллит статус премиума (каждые 3 сек,
++/// до 10 минут) и дополнительно проверяет его при возврате в приложение.
+ class PayWebScreen extends StatefulWidget {
+   final String url;
+ 
+@@ -23,22 +34,49 @@ class PayWebScreen extends StatefulWidget {
+ 
+ class _PayWebScreenState extends State<PayWebScreen>
+     with WidgetsBindingObserver {
++  late final WebViewController _controller;
+   Timer? _pollTimer;
+-  bool _launching = true;
+-  bool _launchFailed = false;
++  bool _pageLoading = true;
++  bool _rendererCrashed = false;
+   bool _closing = false;
+   bool _refreshInFlight = false;
+-  bool _timedOut = false;
+-  String? _error;
++  bool _externalOpened = false;
+ 
+   static const _pollInterval = Duration(seconds: 3);
+   static const _timeout = Duration(minutes: 10);
+ 
++  /// Хост нашего сайта с выбором тарифа — только он остаётся в WebView.
++  static final String _inAppHost = Uri.parse(ApiConfig.baseUrl).host;
++
+   @override
+   void initState() {
+     super.initState();
+     WidgetsBinding.instance.addObserver(this);
+-    _openBrowser();
++
++    _controller = WebViewController()
++      ..setJavaScriptMode(JavaScriptMode.unrestricted)
++      ..setBackgroundColor(AppColors.darkBackground)
++      ..setNavigationDelegate(NavigationDelegate(
++        onNavigationRequest: _handleNavigation,
++        onPageStarted: (_) => setState(() {
++          _pageLoading = true;
++          _rendererCrashed = false;
++        }),
++        onPageFinished: (_) => setState(() => _pageLoading = false),
++        onWebResourceError: (error) {
++          if (error.errorCode == -1) {
++            // Renderer crash — показываем кнопку перезагрузки
++            if (mounted) {
++              setState(() {
++                _pageLoading = false;
++                _rendererCrashed = true;
++              });
++            }
++          }
++        },
++      ))
++      ..loadRequest(Uri.parse(widget.url));
++
+     _startPolling();
+   }
+ 
+@@ -51,51 +89,43 @@ class _PayWebScreenState extends State<PayWebScreen>
+ 
+   @override
+   void didChangeAppLifecycleState(AppLifecycleState state) {
++    // Пользователь вернулся из внешнего браузера / приложения банка —
++    // сразу проверяем, не активировался ли премиум.
+     if (state == AppLifecycleState.resumed) {
+       _checkPremium();
+     }
+   }
+ 
+-  Future<void> _openBrowser() async {
+-    setState(() {
+-      _launching = true;
+-      _launchFailed = false;
+-      _error = null;
+-    });
++  /// Шаг 1 (выбор тарифа на нашем хосте) — внутри WebView.
++  /// Шаг 2 (страница оплаты wata.pro и любые банковские схемы) — во внешнем
++  /// браузере.
++  FutureOr<NavigationDecision> _handleNavigation(NavigationRequest request) {
++    final uri = Uri.tryParse(request.url);
++    if (uri == null) return NavigationDecision.prevent;
+ 
+-    try {
+-      final uri = Uri.tryParse(widget.url);
+-      if (uri == null || !(uri.isScheme('https') || uri.isScheme('http'))) {
+-        if (!mounted) return;
+-        setState(() {
+-          _launching = false;
+-          _launchFailed = true;
+-          _error = 'Некорректная ссылка оплаты';
+-        });
+-        return;
+-      }
++    final isHttp = uri.isScheme('https') || uri.isScheme('http');
+ 
+-      final opened = await launchUrl(
+-        uri,
+-        mode: LaunchMode.externalApplication,
+-      );
+-      if (!mounted) return;
+-      if (!opened) {
+-        setState(() {
+-          _launching = false;
+-          _launchFailed = true;
+-          _error = 'Не удалось открыть браузер';
+-        });
+-        return;
++    // Наш сайт (выбор тарифа, страницы успеха/ошибки) — остаёмся в WebView.
++    if (isHttp && uri.host == _inAppHost) {
++      return NavigationDecision.navigate;
++    }
++
++    // Всё остальное: платёжная форма payment.wata.pro/pay-form/<ID>,
++    // редиректы эквайринга и deep-link'и банков (bank100000000111:// и т.п.)
++    // — отдаём системе.
++    _openExternally(uri);
++    return NavigationDecision.prevent;
++  }
++
++  Future<void> _openExternally(Uri uri) async {
++    try {
++      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
++      if (opened && mounted) {
++        setState(() => _externalOpened = true);
+       }
+-      setState(() => _launching = false);
+     } catch (_) {
+-      if (!mounted) return;
+-      setState(() {
+-        _launching = false;
+-        _launchFailed = true;
+-        _error = 'Не удалось открыть браузер';
+-      });
++      // Нечем открыть схему — молча игнорируем, пользователь может выбрать
++      // другой способ оплаты на странице.
+     }
+   }
+ 
+@@ -109,7 +139,6 @@ class _PayWebScreenState extends State<PayWebScreen>
+       }
+       if (DateTime.now().isAfter(deadline)) {
+         timer.cancel();
+-        if (mounted) setState(() => _timedOut = true);
+         return;
+       }
+       await _checkPremium();
+@@ -126,7 +155,7 @@ class _PayWebScreenState extends State<PayWebScreen>
+       if (context.read<AuthProvider>().isPremium) {
+         _closing = true;
+         _pollTimer?.cancel();
+-        Navigator.pop(context, true);
++        Navigator.pop(context, true); // true = premium activated
+       }
+     } catch (_) {
+       // Следующий тик поллинга или возврат в приложение повторит проверку.
+@@ -144,92 +173,84 @@ class _PayWebScreenState extends State<PayWebScreen>
+         backgroundColor: Colors.transparent,
+       ),
+       body: SafeArea(
+-        child: Padding(
+-          padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+-          child: Column(
+-            children: [
+-              const Spacer(),
+-              Container(
+-                width: 88,
+-                height: 88,
+-                decoration: BoxDecoration(
+-                  shape: BoxShape.circle,
+-                  color: AppColors.primaryGreen.withOpacity(0.12),
+-                  border: Border.all(
+-                    color: AppColors.primaryGreen.withOpacity(0.35),
+-                  ),
+-                ),
+-                child: Icon(
+-                  _launchFailed
+-                      ? Icons.error_outline_rounded
+-                      : Icons.open_in_browser_rounded,
+-                  size: 40,
+-                  color: _launchFailed ? AppColors.error : AppColors.primaryGreen,
++        child: Stack(
++          children: [
++            if (!_rendererCrashed) WebViewWidget(controller: _controller),
++            if (_pageLoading && !_rendererCrashed)
++              const Center(child: CircularProgressIndicator()),
++            if (_rendererCrashed)
++              Center(
++                child: Column(
++                  mainAxisSize: MainAxisSize.min,
++                  children: [
++                    const Icon(Icons.error_outline_rounded,
++                        size: 48, color: AppColors.error),
++                    const SizedBox(height: 12),
++                    const Text(
++                      'Страница оплаты не загрузилась',
++                      style: TextStyle(
++                        fontSize: 16,
++                        color: AppColors.textPrimary,
++                      ),
++                    ),
++                    const SizedBox(height: 16),
++                    FilledButton.icon(
++                      onPressed: () {
++                        setState(() {
++                          _rendererCrashed = false;
++                          _pageLoading = true;
++                        });
++                        _controller.reload();
++                      },
++                      icon: const Icon(Icons.refresh_rounded),
++                      label: const Text('Перезагрузить'),
++                      style: FilledButton.styleFrom(
++                        backgroundColor: AppColors.primaryGreen,
++                        foregroundColor: Colors.black,
++                      ),
++                    ),
++                  ],
+                 ),
+               ),
+-              const SizedBox(height: 24),
+-              Text(
+-                _launchFailed
+-                    ? (_error ?? 'Не удалось открыть браузер')
+-                    : _timedOut
+-                        ? 'Ожидание оплаты истекло'
+-                        : _launching
+-                            ? 'Открываем страницу оплаты…'
+-                            : 'Оплата открыта в браузере',
+-                textAlign: TextAlign.center,
+-                style: const TextStyle(
+-                  fontSize: 22,
+-                  fontWeight: FontWeight.bold,
+-                  color: AppColors.textPrimary,
+-                ),
+-              ),
+-              const SizedBox(height: 12),
+-              Text(
+-                _launchFailed
+-                    ? 'Откройте страницу ещё раз. Оплата должна идти во внешнем браузере, а не внутри приложения.'
+-                    : _timedOut
+-                        ? 'Если оплата уже прошла, вернитесь в приложение — подписка активируется сама после подтверждения банком.'
+-                        : 'Выберите банк в браузере. После оплаты вернитесь в приложение — подписка активируется автоматически.',
+-                textAlign: TextAlign.center,
+-                style: const TextStyle(
+-                  fontSize: 14,
+-                  height: 1.5,
+-                  color: AppColors.textSecondary,
+-                ),
+-              ),
+-              if (!_launchFailed && !_timedOut) ...[
+-                const SizedBox(height: 28),
+-                const SizedBox(
+-                  width: 28,
+-                  height: 28,
+-                  child: CircularProgressIndicator(strokeWidth: 2.4),
+-                ),
+-                const SizedBox(height: 12),
+-                const Text(
+-                  'Ждём подтверждение оплаты…',
+-                  style: TextStyle(color: AppColors.textTertiary, fontSize: 13),
+-                ),
+-              ],
+-              const Spacer(),
+-              SizedBox(
+-                width: double.infinity,
+-                child: FilledButton.icon(
+-                  onPressed: _launching ? null : _openBrowser,
+-                  icon: const Icon(Icons.open_in_new_rounded),
+-                  label: Text(
+-                    _launchFailed
+-                        ? 'Открыть оплату снова'
+-                        : 'Открыть браузер снова',
++            if (_externalOpened && !_pageLoading && !_rendererCrashed)
++              Positioned(
++                left: 16,
++                right: 16,
++                bottom: 16,
++                child: Container(
++                  padding:
++                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++                  decoration: BoxDecoration(
++                    color: AppColors.darkBackground.withOpacity(0.92),
++                    borderRadius: BorderRadius.circular(12),
++                    border: Border.all(
++                      color: AppColors.primaryGreen.withOpacity(0.35),
++                    ),
+                   ),
+-                  style: FilledButton.styleFrom(
+-                    backgroundColor: AppColors.primaryGreen,
+-                    foregroundColor: Colors.black,
+-                    padding: const EdgeInsets.symmetric(vertical: 14),
++                  child: Row(
++                    children: const [
++                      SizedBox(
++                        width: 18,
++                        height: 18,
++                        child: CircularProgressIndicator(strokeWidth: 2),
++                      ),
++                      SizedBox(width: 12),
++                      Expanded(
++                        child: Text(
++                          'Оплата открыта в браузере. После оплаты вернитесь — '
++                          'подписка активируется автоматически.',
++                          style: TextStyle(
++                            fontSize: 13,
++                            height: 1.4,
++                            color: AppColors.textSecondary,
++                          ),
++                        ),
++                      ),
++                    ],
+                   ),
+                 ),
+               ),
+-            ],
+-          ),
++          ],
+         ),
+       ),
+     );
+diff --git a/lib/screens/subscription_screen.dart b/lib/screens/subscription_screen.dart
+index 8ac99c4..98c08c0 100644
+--- a/lib/screens/subscription_screen.dart
++++ b/lib/screens/subscription_screen.dart
+@@ -43,7 +43,8 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
+     }
+     final url = '${ApiConfig.baseUrl}/pay?uid=$userId&tariff_id=${tariff.id}';
+ 
+-    // Оплата во внешнем браузере — поллинг внутри PayWebScreen
++    // Выбор тарифа — в WebView внутри приложения; сама оплата (wata.pro)
++    // откроется во внешнем браузере. Поллинг премиума внутри PayWebScreen.
+     final activated = await Navigator.push<bool>(
+       context,
+       MaterialPageRoute(builder: (_) => PayWebScreen(url: url)),
+diff --git a/lib/services/api_service.dart b/lib/services/api_service.dart
+index eb37d8f..7f050a7 100644
+--- a/lib/services/api_service.dart
++++ b/lib/services/api_service.dart
+@@ -39,7 +39,10 @@ class ApiService {
+         // Cache both raw URLs and JSON configs as one entry per line.
+         final cacheLines = allConfigs.map((c) {
+           if (c.hasJsonConfig) return c.rawJsonConfig!;
+-          return c.originalUrl;
++          if (c.originalUrl.isNotEmpty) return c.originalUrl;
++          // Hysteria2 extracted from backend JSON: cache as canonical URL.
++          if (c.isHysteria2) return c.hysteria2Url;
++          return '';
+         }).where((s) => s.isNotEmpty).toList();
+         await _saveToCache(cacheLines.join('\n'));
+       }
+@@ -99,6 +102,10 @@ class ApiService {
+         } else if (trimmed.startsWith('vless://') ||
+             trimmed.startsWith('ss://')) {
+           configs.add(VlessConfig.fromUrl(trimmed));
++        } else if (trimmed.startsWith('hysteria2://') ||
++            trimmed.startsWith('hy2://')) {
++          // Hysteria2 — handled by the dedicated engine, not flutter_v2ray_plus.
++          configs.add(VlessConfig.fromHysteria2Url(trimmed));
+         }
+       } catch (e) {
+         print('❌ Error parsing config line: $e');
+diff --git a/lib/services/hysteria_engine_service.dart b/lib/services/hysteria_engine_service.dart
+new file mode 100644
+index 0000000..d44bef0
+--- /dev/null
++++ b/lib/services/hysteria_engine_service.dart
+@@ -0,0 +1,140 @@
++import 'dart:async';
++
++import 'package:flutter/services.dart';
++
++/// Connection states reported by the native Hysteria2 engine
++/// (mirrors VyomState in the Android module).
++enum HysteriaState {
++  idle,
++  connecting,
++  connected,
++  stopping,
++  disconnected,
++  error,
++}
++
++/// Dart bridge to the dedicated Hysteria2 engine
++/// (android/hysteria2_engine, ported from gwapk's vyom-tun-sdk).
++///
++/// This engine is fully separate from flutter_v2ray_plus:
++/// - its own VpnService (`:hysteria2_process`) with TUN + hev-socks5-tunnel;
++/// - its own Xray core (libxray.so with the `hysteria` outbound, version 2);
++/// - it accepts a canonical `hysteria2://` URL and builds the Xray JSON
++///   natively (LinkParser), so local ports always match its TUN bridge.
++class HysteriaEngineService {
++  static const MethodChannel _channel =
++      MethodChannel('app.vless.vpn/hysteria2');
++  static const EventChannel _statusChannel =
++      EventChannel('app.vless.vpn/hysteria2/status');
++
++  bool _initialized = false;
++  Stream<String>? _rawStream;
++  Stream<HysteriaState>? _statusStream;
++  Stream<HysteriaTraffic>? _trafficStream;
++
++  /// One-time engine init (copies optional assets, sets notification branding).
++  Future<bool> initialize() async {
++    if (_initialized) return true;
++    try {
++      final ok = await _channel.invokeMethod<bool>('initialize') ?? false;
++      _initialized = ok;
++      return ok;
++    } on PlatformException {
++      return false;
++    } on MissingPluginException {
++      // Non-Android platform or engine not linked in this build.
++      return false;
++    }
++  }
++
++  /// Start the Hysteria2 tunnel for the given `hysteria2://` URL.
++  ///
++  /// The native side requests the VPN permission itself when needed
++  /// (VyomPermissionActivity) and restarts the tunnel after the grant.
++  Future<bool> connect(String hysteria2Url) async {
++    await initialize();
++    try {
++      return await _channel.invokeMethod<bool>(
++            'connect',
++            {'url': hysteria2Url},
++          ) ??
++          false;
++    } on PlatformException {
++      return false;
++    }
++  }
++
++  /// Stop the Hysteria2 tunnel.
++  Future<void> disconnect() async {
++    try {
++      await _channel.invokeMethod('disconnect');
++    } on PlatformException {
++      // Engine already stopped — nothing to do.
++    }
++  }
++
++  Future<bool> isConnected() async {
++    try {
++      return await _channel.invokeMethod<bool>('isConnected') ?? false;
++    } on PlatformException {
++      return false;
++    }
++  }
++
++  Stream<String> get _events {
++    _rawStream ??= _statusChannel
++        .receiveBroadcastStream()
++        .map((event) => event?.toString() ?? '')
++        .asBroadcastStream();
++    return _rawStream!;
++  }
++
++  /// Broadcast stream of engine states (kept alive across subscriptions).
++  Stream<HysteriaState> get statusStream {
++    _statusStream ??= _events
++        .where((e) => e.startsWith('STATE:'))
++        .map((e) => _mapState(e.substring('STATE:'.length)))
++        .asBroadcastStream();
++    return _statusStream!;
++  }
++
++  /// Cumulative traffic totals (bytes since tunnel start), ~1 event/second.
++  Stream<HysteriaTraffic> get trafficStream {
++    _trafficStream ??= _events
++        .where((e) => e.startsWith('TRAFFIC:'))
++        .map((e) {
++          final parts = e.split(':');
++          return HysteriaTraffic(
++            uploadTotal: parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0,
++            downloadTotal: parts.length > 2 ? int.tryParse(parts[2]) ?? 0 : 0,
++          );
++        })
++        .asBroadcastStream();
++    return _trafficStream!;
++  }
++
++  static HysteriaState _mapState(String raw) {
++    switch (raw.toUpperCase()) {
++      case 'CONNECTING':
++        return HysteriaState.connecting;
++      case 'CONNECTED':
++        return HysteriaState.connected;
++      case 'STOPPING':
++        return HysteriaState.stopping;
++      case 'DISCONNECTED':
++        return HysteriaState.disconnected;
++      case 'ERROR':
++        return HysteriaState.error;
++      default:
++        return HysteriaState.idle;
++    }
++  }
++}
++
++/// Cumulative byte counters reported by the engine's TUN layer.
++class HysteriaTraffic {
++  final int uploadTotal;
++  final int downloadTotal;
++
++  const HysteriaTraffic({required this.uploadTotal, required this.downloadTotal});
++}
+diff --git a/lib/services/vpn_service.dart b/lib/services/vpn_service.dart
+index 5dacc7d..5d3ec7e 100644
+--- a/lib/services/vpn_service.dart
++++ b/lib/services/vpn_service.dart
+@@ -3,17 +3,31 @@ import 'package:flutter/services.dart';
+ import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
+ import 'package:flutter_v2ray_plus/url/url.dart';
+ import '../models/vless_config_model.dart';
++import 'hysteria_engine_service.dart';
+ 
+ /// VPN connection status
+ enum VpnStatus { disconnected, connecting, connected, disconnecting, error }
+ 
+-/// Service for VPN connection management using flutter_v2ray_plus
++/// Which engine currently owns the tunnel.
++enum ActiveEngine { none, v2ray, hysteria2 }
++
++/// Service for VPN connection management.
++///
++/// VLESS / Shadowsocks / raw JSON configs go through flutter_v2ray_plus
++/// (unchanged). Hysteria2 servers are routed to the dedicated native engine
++/// (see HysteriaEngineService), ported from the gwapk project.
+ class VpnService {
+   late FlutterV2ray _flutterV2ray;
++  final HysteriaEngineService _hysteriaEngine = HysteriaEngineService();
++  ActiveEngine _activeEngine = ActiveEngine.none;
+   VpnStatus _status = VpnStatus.disconnected;
+   VlessConfig? _currentConfig;
+   String? _errorMessage;
+   StreamSubscription<VlessStatus>? _statusSubscription;
++  StreamSubscription<HysteriaState>? _hysteriaStatusSubscription;
++  StreamSubscription<HysteriaTraffic>? _hysteriaTrafficSubscription;
++  HysteriaTraffic? _lastHysteriaTraffic;
++  DateTime? _lastHysteriaTrafficAt;
+ 
+   // Stream controller to broadcast status changes
+   final _statusController = StreamController<VpnStatus>.broadcast();
+@@ -44,9 +58,18 @@ class VpnService {
+ 
+       // Listen to the status stream from flutter_v2ray_plus
+       _statusSubscription = _flutterV2ray.onStatusChanged.listen((vlessStatus) {
++        // Ignore v2ray engine chatter while the Hysteria2 engine owns the tunnel.
++        if (_activeEngine == ActiveEngine.hysteria2) return;
+         _handleStatusChange(vlessStatus);
+       });
+ 
++      // Dedicated Hysteria2 engine: init + state / traffic streams.
++      await _hysteriaEngine.initialize();
++      _hysteriaStatusSubscription =
++          _hysteriaEngine.statusStream.listen(_handleHysteriaStateChange);
++      _hysteriaTrafficSubscription =
++          _hysteriaEngine.trafficStream.listen(_handleHysteriaTraffic);
++
+       return true;
+     } catch (e) {
+       _errorMessage = 'Initialization error: $e';
+@@ -70,6 +93,29 @@ class VpnService {
+       _errorMessage = null;
+       _currentConfig = config;
+ 
++      // --- Hysteria2: handled by the dedicated ported engine, never by
++      // flutter_v2ray_plus (its stock Xray core has no hysteria outbound). ---
++      if (config.isHysteria2) {
++        _activeEngine = ActiveEngine.hysteria2;
++        final url = config.originalUrl.isNotEmpty &&
++                (config.originalUrl.startsWith('hysteria2://') ||
++                    config.originalUrl.startsWith('hy2://'))
++            ? config.originalUrl
++            : config.hysteria2Url;
++        print('Hysteria2 URL: $url');
++
++        final started = await _hysteriaEngine.connect(url);
++        if (!started) {
++          _errorMessage = 'Не удалось запустить Hysteria2 движок.';
++          _activeEngine = ActiveEngine.none;
++          _updateStatus(VpnStatus.disconnected);
++          return false;
++        }
++        // Final CONNECTED/ERROR arrives via the engine status stream.
++        return true;
++      }
++
++      _activeEngine = ActiveEngine.v2ray;
+       String jsonConfig;
+ 
+       if (config.hasJsonConfig) {
+@@ -145,12 +191,17 @@ class VpnService {
+   Future<bool> disconnect() async {
+     try {
+       _updateStatus(VpnStatus.disconnecting);
+-      await _flutterV2ray.stopVless();
++      if (_activeEngine == ActiveEngine.hysteria2) {
++        await _hysteriaEngine.disconnect();
++      } else {
++        await _flutterV2ray.stopVless();
++      }
+       _currentConfig = null;
+-      // Status will be updated via the onStatusChanged stream
++      // Status will be updated via the engine status stream
+       return true;
+     } catch (e) {
+       _errorMessage = e.toString();
++      _activeEngine = ActiveEngine.none;
+       _updateStatus(VpnStatus.disconnected);
+       return false;
+     }
+@@ -180,6 +231,11 @@ class VpnService {
+   /// Measure server ping/delay
+   Future<int?> pingServer(VlessConfig config) async {
+     try {
++      // Hysteria2 servers are not measurable through flutter_v2ray_plus
++      // (QUIC/UDP-based). The server list already measures them with a raw
++      // TCP socket in AppProvider.loadServers().
++      if (config.isHysteria2) return null;
++
+       // If connected to this server, get connected delay
+       if (_status == VpnStatus.connected && _currentConfig?.id == config.id) {
+         return await _flutterV2ray.getConnectedServerDelay();
+@@ -203,6 +259,69 @@ class VpnService {
+     }
+   }
+ 
++  /// Handle state changes from the dedicated Hysteria2 engine
++  void _handleHysteriaStateChange(HysteriaState state) {
++    if (_activeEngine != ActiveEngine.hysteria2) return;
++
++    switch (state) {
++      case HysteriaState.connecting:
++        _updateStatus(VpnStatus.connecting);
++        break;
++      case HysteriaState.connected:
++        _updateStatus(VpnStatus.connected);
++        break;
++      case HysteriaState.stopping:
++        _updateStatus(VpnStatus.disconnecting);
++        break;
++      case HysteriaState.disconnected:
++        _activeEngine = ActiveEngine.none;
++        _lastHysteriaTraffic = null;
++        _lastHysteriaTrafficAt = null;
++        _updateStatus(VpnStatus.disconnected);
++        break;
++      case HysteriaState.error:
++        _errorMessage = 'Ошибка Hysteria2 подключения';
++        _activeEngine = ActiveEngine.none;
++        _updateStatus(VpnStatus.error);
++        break;
++      case HysteriaState.idle:
++        break;
++    }
++  }
++
++  /// Convert Hysteria2 cumulative traffic totals into the same VlessStatus
++  /// events the UI already consumes for speed display.
++  void _handleHysteriaTraffic(HysteriaTraffic traffic) {
++    if (_activeEngine != ActiveEngine.hysteria2) return;
++
++    final now = DateTime.now();
++    int upSpeed = 0;
++    int downSpeed = 0;
++    final last = _lastHysteriaTraffic;
++    final lastAt = _lastHysteriaTrafficAt;
++    if (last != null && lastAt != null) {
++      final seconds = now.difference(lastAt).inMilliseconds / 1000.0;
++      if (seconds > 0) {
++        upSpeed = ((traffic.uploadTotal - last.uploadTotal) / seconds)
++            .clamp(0, double.maxFinite)
++            .round();
++        downSpeed = ((traffic.downloadTotal - last.downloadTotal) / seconds)
++            .clamp(0, double.maxFinite)
++            .round();
++      }
++    }
++    _lastHysteriaTraffic = traffic;
++    _lastHysteriaTrafficAt = now;
++
++    _vlessStatusController.add(VlessStatus(
++      state: 'CONNECTED',
++      uploadSpeed: upSpeed,
++      downloadSpeed: downSpeed,
++      upload: traffic.uploadTotal,
++      download: traffic.downloadTotal,
++    ));
++  }
++
+   /// Handle status changes from flutter_v2ray_plus
+   void _handleStatusChange(VlessStatus vlessStatus) {
+     // Broadcast full status for speed/traffic updates
+@@ -235,6 +354,8 @@ class VpnService {
+   /// Clean up resources
+   void dispose() {
+     _statusSubscription?.cancel();
++    _hysteriaStatusSubscription?.cancel();
++    _hysteriaTrafficSubscription?.cancel();
+     _statusController.close();
+     _vlessStatusController.close();
+   }
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 6ae8a94..5d2b106 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -69,6 +69,9 @@ dependencies:
+   package_info_plus: ^9.0.0
+   in_app_review: ^2.0.9
+   url_launcher: ^6.3.2
++  # In-app WebView for the tariff-selection step of the payment flow
++  # (the final wata.pro checkout still opens in the external browser).
++  webview_flutter: ^4.4.2
+   flutter_secure_storage: ^9.0.0
+   crypto: ^3.0.3
+   installed_apps: ^1.5.0

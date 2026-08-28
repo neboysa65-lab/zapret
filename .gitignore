@@ -1,0 +1,89 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Build artifacts & local env (any depth)
+build/
+.gradle/
+.kotlin/
+local.properties
+__MACOSX/
+hs_err_pid*.log
+
+# Secrets — never commit to a public repo
+android/key.properties
+KEYSTORE_INFO.txt
+*.jks
+*.keystore
+
+# Local debug scripts & dumps containing live API tokens
+/test_api.dart
+/test_api_check.dart
+/test_auth.dart
+/test_ms.dart
+/test_real.dart
+/test_routes.dart
+/test_routes2.dart
+/test_routes_fixed.dart
+/fetch_api_data.dart
+/fetch_api_data2.dart
+/compare.dart
+/compare2.dart
+/compare3.dart
+/parse_links.dart
+/parse_links2.dart
+/validate_hy2.py
+/sub.txt
+/decoded_sub.txt
+/out.txt
+
+# Flutter generated per-platform files
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/windows/flutter/generated_plugin_registrant.cc
+**/windows/flutter/generated_plugins.cmake

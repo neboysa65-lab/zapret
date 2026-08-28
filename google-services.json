@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "966070215487",
+    "project_id": "gwvpn-f0038",
+    "storage_bucket": "gwvpn-f0038.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:966070215487:android:f5b65f79a37cf7211da98a",
+        "android_client_info": {
+          "package_name": "com.wgvpnfree"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAQ2tDACRvZ1qGh3_CYmcaBaqCvIAFHxss"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

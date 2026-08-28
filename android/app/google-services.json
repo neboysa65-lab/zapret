@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "17116424211",
+    "project_id": "vleesvpn",
+    "storage_bucket": "vleesvpn.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:17116424211:android:52948b5becc9ba7cc137e6",
+        "android_client_info": {
+          "package_name": "app.vless.vpn"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB4KJNgkgUprRvsBN9IcYo2hHcI_cZ-Sa8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
