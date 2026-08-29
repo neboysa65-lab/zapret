@@ -86,6 +86,19 @@ class GwVpnService : TProxyService() {
     private var startThread: Thread? = null
 
     /**
+     * startId последнего onStartCommand. Остановка делает stopSelf(этого id):
+     * если после запроса на остановку прилетел новый START (его startId новее),
+     * система игнорирует наш stopSelf и сервис остаётся жить под новым
+     * коннектом. Без этого no-arg stopSelf() уничтожал сервис ВМЕСТЕ с уже
+     * поставленным в очередь новым START — туннель не поднимался вовсе, а
+     * состояние застревало в CONNECTING.
+     */
+    @Volatile private var lastStartId = 0
+
+    /** Поднят ли нативный tun2socks: stop без старта не вызываем никогда. */
+    @Volatile private var tproxyStarted = false
+
+    /**
      * Эпоха действий: каждый START/STOP увеличивает счётчик, и только воркер
      * текущей эпохи имеет право трогать состояние и TProxy. Без этого два
      * быстрых START плодили два воркера (двойной establish()/TProxyStartService —
@@ -131,6 +144,7 @@ class GwVpnService : TProxyService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
         startForegroundNotification()
         when (intent?.action) {
             ACTION_START -> {
@@ -186,6 +200,7 @@ class GwVpnService : TProxyService() {
                     // воркер уже не актуален и ничего не делает.
                     if (actionEpoch.get() != myEpoch) return@withLock
                     stopRequested = false
+                    GwManager.markStopping(false)
                     teardownTunnel()
 
                     // Fail fast and loudly: without libhev-socks5-tunnel.so the
@@ -255,6 +270,7 @@ class GwVpnService : TProxyService() {
                         throw java.io.IOException("cancelled")
                     }
                     TProxyStartService(yaml.absolutePath, pfd.fd)
+                    tproxyStarted = true
 
                     startStatsTimer()
                     tunnelUp = true
@@ -598,6 +614,7 @@ class GwVpnService : TProxyService() {
         // сработают и воркер выйдет, не тронув состояние.
         actionEpoch.incrementAndGet()
         stopRequested = true
+        GwManager.markStopping(true)
         // tunnelUp снимаем ДО пинка: supervisor должен увидеть «уже не нужно»
         // и выйти, а не начать очередное переподключение.
         tunnelUp = false
@@ -605,6 +622,7 @@ class GwVpnService : TProxyService() {
         runCatching { transport?.close() }
         runCatching { startThread?.interrupt() }
         val myEpoch = actionEpoch.get()
+        val myStartId = lastStartId
         thread(name = "gw-tunnel-stop") {
             val stopped = lifecycleLock.withLock {
                 // После нас прилетел новый START — остановка отменена: свежий
@@ -618,12 +636,15 @@ class GwVpnService : TProxyService() {
                     GwManager.clearRunning(this@GwVpnService)
                     teardownTunnel()
                     GwManager.setState(GwManager.State.DISCONNECTED)
+                    GwManager.markStopping(false)
                     true
                 }
             }
-            // stopSelf() — строго вне лока: иначе onDestroy (main thread)
-            // блокируется на этом же локе.
-            if (stopped) stopSelf()
+            // stopSelf(наш startId): если после нас пришёл новый START,
+            // система проигнорирует остановку. Именно no-arg stopSelf()
+            // убивал сервис вместе с уже queued-новым START. Вызов — строго
+            // вне лока: иначе onDestroy (main thread) блокируется на нём же.
+            if (stopped) stopSelf(myStartId)
         }
     }
 
@@ -632,8 +653,16 @@ class GwVpnService : TProxyService() {
         kickSupervisor()
         GwManager.setReconnecting(false)
         stopStatsTimer()
-        runCatching { TProxyStopService() }
-        Thread.sleep(200)
+        // Нативный stop зовём только если туннель реально стартовали:
+        // stop «вхолостую» (например, обрыв на этапе коннекта до
+        // TProxyStartService) не должен дёргать нативную сторону.
+        if (tproxyStarted) {
+            runCatching { TProxyStopService() }
+            tproxyStarted = false
+            // Даём нативной стороне время дохлопнуть перед возможным
+            // следующим TProxyStartService.
+            Thread.sleep(500)
+        }
         runCatching { socksServer?.stop() }
         runCatching { transport?.close() }
         socksServer = null
@@ -726,6 +755,12 @@ class GwVpnService : TProxyService() {
         kickSupervisor()
         unregisterNetworkCallback()
         if (instance === this) instance = null
+        // Если сервис уничтожили, пока состояние висело в CONNECTING
+        // (например, новый START был потерян из-за stopSelf), — приводим
+        // состояние в порядок, иначе UI застрянет в «подключении» навсегда.
+        if (GwManager.state == GwManager.State.CONNECTING) {
+            GwManager.setState(GwManager.State.DISCONNECTED)
+        }
         // Никогда не ждём lifecycleLock на main thread: воркер коннекта держит
         // его десятки секунд, и зависший onDestroy выглядел как «приложение
         // вылетело» (ANR). Не дождались — teardown делает фоновый поток.

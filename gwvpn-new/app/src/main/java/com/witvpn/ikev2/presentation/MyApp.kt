@@ -29,6 +29,7 @@ class MyApp : Application() {
     override fun onCreate() {
         super.onCreate()
         self = this
+        installCrashCapture()
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
         }
@@ -60,6 +61,37 @@ class MyApp : Application() {
         }
 
         initGoogleBilling()
+    }
+
+    /**
+     * Пишет стек любого необработанного исключения в files/last_crash.txt —
+     * без этого «вылетает сразу» на устройстве пользователя не диагностировать.
+     */
+    private fun installCrashCapture() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val gwState = runCatching {
+                    "gw.state=${com.witvpn.gw.GwManager.state} " +
+                        "reconnecting=${com.witvpn.gw.GwManager.isReconnecting} " +
+                        "stopping=${com.witvpn.gw.GwManager.isStopping}"
+                }.getOrDefault("")
+                java.io.File(filesDir, "last_crash.txt").writeText(
+                    buildString {
+                        append("time=").append(System.currentTimeMillis()).append('\n')
+                        append("thread=").append(thread.name).append('\n')
+                        append(gwState).append('\n')
+                        append(throwable.stackTraceToString())
+                        var cause = throwable.cause
+                        while (cause != null) {
+                            append("\ncaused by:\n").append(cause.stackTraceToString())
+                            cause = cause.cause
+                        }
+                    }
+                )
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
     }
 
     // your package name is the same with your main process name

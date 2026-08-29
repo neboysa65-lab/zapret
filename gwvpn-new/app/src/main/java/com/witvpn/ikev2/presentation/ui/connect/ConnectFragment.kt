@@ -731,8 +731,6 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         putStringPref(SharePrefs.KEY_SELECTED_PROTOCOL, protocol)
 
         val unselectedColor = Color.parseColor("#8C9197")
-        binding.btnIpv4.background = null
-        binding.btnIpv4.setTextColor(unselectedColor)
         binding.btnVless.background = null
         binding.btnVless.setTextColor(unselectedColor)
         binding.btnAwg.background = null
@@ -981,16 +979,22 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         if (now - lastGwClickAt < 1000) return
         lastGwClickAt = now
 
-        if (GwManager.isConnected()) {
+        // isStopping = тап «стоп» уже был, но teardown ещё идёт (state висит в
+        // CONNECTING/CONNECTED). В этот окне второй тап должен СРАЗУ запускать
+        // новый коннект — сервис это безопасно разруливает эпохой, — а не
+        // упираться в повторную остановку.
+        if (GwManager.isConnected() && !GwManager.isStopping) {
             val ctx = context ?: return
+            handler.removeCallbacks(gwConnectionTimeoutRunnable)
             GwManager.stopVpn(ctx)
             updateVlessState(false)
             // reportDisconnect выполняется в gwListener при переходе в DISCONNECTED,
             // чтобы не дублировать и покрывать также самопроизвольный обрыв туннеля.
             return
         }
-        if (GwManager.state == GwManager.State.CONNECTING) {
+        if (GwManager.state == GwManager.State.CONNECTING && !GwManager.isStopping) {
             val ctx = context ?: return
+            handler.removeCallbacks(gwConnectionTimeoutRunnable)
             GwManager.stopVpn(ctx)
             updateVlessState(false)
             showProgress(false)

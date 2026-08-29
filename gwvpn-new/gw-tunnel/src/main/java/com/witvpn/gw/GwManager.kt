@@ -46,6 +46,20 @@ object GwManager {
     @Volatile var isReconnecting: Boolean = false
         private set
 
+    /**
+     * Пользователь нажал «стоп», но туннель ещё фактически разбирается:
+     * state останется CONNECTING/CONNECTED до завершения teardown.
+     * UI сверяется с этим флагом, чтобы тап «подключиться» во время разборки
+     * сразу запускал новый коннект (epoch-механика сервиса это безопасно
+     * разруливает), а не упирался в повторную остановку.
+     */
+    @Volatile var isStopping: Boolean = false
+        private set
+
+    internal fun markStopping(stopping: Boolean) {
+        isStopping = stopping
+    }
+
     @Volatile var lastError: String? = null
         private set
 
