@@ -1,8 +1,6 @@
 package com.witvpn.ikev2.data.repository
 
 import com.witvpn.ikev2.data.remote.ApiService
-import com.witvpn.ikev2.data.remote.model.ServerObject
-import com.witvpn.ikev2.domain.model.Server
 import com.witvpn.ikev2.domain.repository.ServerRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,10 +15,6 @@ import javax.inject.Singleton
 class ServerRepositoryImpl @Inject constructor(
     private val api: ApiService
 ) : ServerRepository {
-    private val state = MutableStateFlow<List<Server>>(listOf())
-    override val stateFlow: StateFlow<List<Server>> =
-        state.asStateFlow()
-        
     private val awgState = MutableStateFlow<List<com.witvpn.ikev2.domain.model.ServerAwg>>(listOf())
     override val awgStateFlow: StateFlow<List<com.witvpn.ikev2.domain.model.ServerAwg>> = awgState.asStateFlow()
 
@@ -156,16 +150,6 @@ class ServerRepositoryImpl @Inject constructor(
     private val _serversLoad = MutableStateFlow<Map<String, Int>>(emptyMap())
     override val serversLoadFlow: StateFlow<Map<String, Int>> = _serversLoad.asStateFlow()
 
-    override suspend fun getServers(param: MutableMap<String, Any>) {
-        val response = api.getServers(param)
-        val servers = response.data.map { unwrap(it) }
-        state.update { servers }
-        // fetchServersLoad() отсюда убран: ViewModel всё равно вызывала его
-        // отдельно, и на каждое открытие списка уходило ДВА одинаковых запроса
-        // servers/load (видно в логах). Теперь его дёргает только вызывающий —
-        // параллельно с остальными, а не после ответа getServers.
-    }
-    
     override suspend fun fetchServersLoad() {
         try {
             val response = api.getServersLoad(mutableMapOf())
@@ -179,21 +163,5 @@ class ServerRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             android.util.Log.e("VlessLoad", "fetchServersLoad EXCEPTION: ${e.message}", e)
         }
-    }
-
-    private fun unwrap(serverObject: ServerObject): Server {
-        return Server(
-            id = serverObject.id,
-            country = serverObject.country,
-            ipAddress = serverObject.ipAddress,
-            premium = serverObject.premium as? Boolean,
-            recommend = serverObject.recommend as? Boolean,
-            state = serverObject.state,
-            countryCode = serverObject.countryCode,
-            ca_file = serverObject.caFile,
-            ca_fileName = serverObject.caFileName,
-            p_nsm = serverObject.p_nsm,
-            u_nsm = serverObject.u_nsm
-        )
     }
 }

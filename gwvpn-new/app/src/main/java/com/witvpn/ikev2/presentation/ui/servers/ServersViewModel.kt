@@ -3,7 +3,6 @@ package com.witvpn.ikev2.presentation.ui.servers
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
-import com.witvpn.ikev2.domain.model.Server
 import com.witvpn.ikev2.domain.model.User
 import com.witvpn.ikev2.domain.repository.ServerRepository
 import com.witvpn.ikev2.presentation.base.BaseViewModel
@@ -18,7 +17,6 @@ class ServersViewModel @Inject constructor(
     private val serverRepository: ServerRepository,
 ) : BaseViewModel() {
 
-    val serversList: LiveData<List<Server>> = serverRepository.stateFlow.asLiveData()
     val serversAwgList: LiveData<List<com.witvpn.ikev2.domain.model.ServerAwg>> = serverRepository.awgStateFlow.asLiveData()
     val serversGwList: LiveData<List<com.witvpn.ikev2.domain.model.ServerGw>> = serverRepository.gwStateFlow.asLiveData()
     val serversLoadMap: LiveData<Map<String, Int>> = serverRepository.serversLoadFlow.asLiveData()
@@ -31,26 +29,14 @@ class ServersViewModel @Inject constructor(
         isExecuting = true
         viewModelScope.launch(exceptionHandler) {
             try {
-                // Запросы независимы, поэтому идут параллельно. Раньше это была
-                // строгая цепочка getServers -> getServersAwg -> getServersGw в
-                // одной корутине, и GW стоял последним: по логам server_awg
-                // отвечал 4.3 с, из-за чего GW-список появлялся на ~5.5 с против
-                // ~2.2 с у ikev2 — та самая «задержка по сравнению с ikev2».
-                // Каждый список теперь отрисовывается сразу по своему ответу.
+                // Запросы независимы, поэтому идут параллельно: каждый список
+                // отрисовывается сразу по своему ответу.
                 //
                 // Карта параметров у каждого запроса СВОЯ: getServersGw
                 // дописывает в неё pubkey, и общий mutable map превратился бы в
                 // гонку между параллельными вызовами.
                 val jobs = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
 
-                jobs += async {
-                    runCatching {
-                        serverRepository.getServers(mutableMapOf("userId" to user.id as Any))
-                    }.onFailure {
-                        android.util.Log.e("ServersViewModel", "getServers failed: ${it.message}", it)
-                    }
-                    Unit
-                }
                 jobs += async {
                     runCatching {
                         serverRepository.getServersAwg(mutableMapOf("userId" to user.id as Any))

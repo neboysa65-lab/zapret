@@ -11,7 +11,6 @@ import androidx.navigation.fragment.findNavController
 import com.witvpn.ikev2.R
 import com.witvpn.ikev2.databinding.FragmentServers2Binding
 import com.witvpn.ikev2.domain.model.Server
-import com.witvpn.ikev2.domain.model.Server.Companion.isAutoConnect
 import com.witvpn.ikev2.presentation.base.BaseFragment
 import com.witvpn.ikev2.presentation.ui.MainTabUIDelegate
 import com.witvpn.ikev2.presentation.ui.ShareViewModel
@@ -34,7 +33,7 @@ class ServersFragment : BaseFragment<FragmentServers2Binding>(R.layout.fragment_
     private val shareViewModel: ShareViewModel by activityViewModels()
 
     private val tabs by lazy {
-        val protocol = arguments?.getString("PROTOCOL") ?: "IKEv2"
+        val protocol = arguments?.getString("PROTOCOL") ?: "GW"
         listOf(
             TabFragment(false, protocol),
             TabFragment(true, protocol)
@@ -63,19 +62,18 @@ class ServersFragment : BaseFragment<FragmentServers2Binding>(R.layout.fragment_
             viewModel.execute(user)
         }
 
-        viewModel.serversList.observe(viewLifecycleOwner) {
-//            when (it.status) {
-//                Status.LOADING -> binding.progress.visibility = View.VISIBLE
-//                else -> {
-//                    binding.progress.visibility = View.GONE
-//                }
-//            }
-//            if(it.isEmpty()){
-//                binding.progress.visibility = View.VISIBLE
-//            } else {
-//                binding.progress.visibility = View.GONE
-//            }
-            showLoading(it.isEmpty())
+        // Прогресс крутится, пока не пришёл ни один из списков (AWG/GW).
+        viewModel.serversAwgList.observe(viewLifecycleOwner) {
+            showLoading(
+                viewModel.serversAwgList.value.isNullOrEmpty() &&
+                    viewModel.serversGwList.value.isNullOrEmpty()
+            )
+        }
+        viewModel.serversGwList.observe(viewLifecycleOwner) {
+            showLoading(
+                viewModel.serversAwgList.value.isNullOrEmpty() &&
+                    viewModel.serversGwList.value.isNullOrEmpty()
+            )
         }
     }
 
@@ -108,7 +106,7 @@ class ServersFragment : BaseFragment<FragmentServers2Binding>(R.layout.fragment_
     }
 
     override fun handleServerClicked(server: Server?) {
-        if (shareViewModel.isPremium || (server != null && server.isAutoConnect)) {
+        if (shareViewModel.isPremium) {
             FragmentUtils.getParent(this, MainTabUIDelegate::class.java)?.setServerToConnect(server)
         } else {
             FragmentUtils.getParent(this, MainTabUIDelegate::class.java)?.setCurrentTab(BottomNavBar.TAB_PREMIUM)

@@ -5,7 +5,6 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.witvpn.ikev2.R
 import com.witvpn.ikev2.domain.model.Server
-import com.witvpn.ikev2.domain.model.Server.Companion.isAutoConnect
 import com.witvpn.ikev2.presentation.utils.Util
 import com.witvpn.ikev2.presentation.utils.inflate
 import com.witvpn.ikev2.presentation.widget.SelectionItemView
@@ -17,9 +16,9 @@ class TabAdapter(
     private var isPremium: Boolean = false
     private val servers: MutableList<Server> = mutableListOf()
     private var serversLoad: Map<String, Int> = emptyMap()
-    private var protocolFilter: String = "IKEv2"
+    private var protocolFilter: String = "GW"
 
-    fun updateData(servers: List<Server>, premium :Boolean, serversLoad: Map<String, Int> = emptyMap(), protocol: String = "IKEv2") {
+    fun updateData(servers: List<Server>, premium :Boolean, serversLoad: Map<String, Int> = emptyMap(), protocol: String = "GW") {
         this.isPremium = premium
         this.serversLoad = serversLoad
         this.protocolFilter = protocol

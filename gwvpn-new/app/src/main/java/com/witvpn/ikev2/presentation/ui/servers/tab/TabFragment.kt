@@ -25,10 +25,10 @@ class TabFragment() : BaseFragment<FragmentTabBinding>(R.layout.fragment_tab) {
     }
     
     private val protocolFilter: String by lazy {
-        requireArguments().getString(PROTOCOL, "IKEv2")
+        requireArguments().getString(PROTOCOL, "GW")
     }
 
-    constructor(isPremium: Boolean, protocol: String = "IKEv2") : this() {
+    constructor(isPremium: Boolean, protocol: String = "GW") : this() {
         arguments = bundleOf(PREMIUM to isPremium, PROTOCOL to protocol)
     }
 
@@ -57,10 +57,6 @@ class TabFragment() : BaseFragment<FragmentTabBinding>(R.layout.fragment_tab) {
             tabAdapter?.notifyDataSetChanged()
         }
 
-        viewModel.serversList.observe(viewLifecycleOwner) { _ ->
-            updateList()
-        }
-
         viewModel.serversAwgList.observe(viewLifecycleOwner) { _ ->
             updateList()
         }
@@ -76,11 +72,8 @@ class TabFragment() : BaseFragment<FragmentTabBinding>(R.layout.fragment_tab) {
 
     private fun updateList() {
         val combined = mutableListOf<Server>()
-        
-        if (protocolFilter == "IKEv2") {
-            val ikev2AndVless = viewModel.serversList.value?.filter { it.premium == premium } ?: emptyList()
-            combined.addAll(ikev2AndVless)
-        } else if (protocolFilter == "AWG") {
+
+        if (protocolFilter == "AWG") {
             val awgServers = viewModel.serversAwgList.value?.map { com.witvpn.ikev2.domain.model.Server.fromAwg(it) }?.filter { it.premium == premium } ?: emptyList()
             combined.addAll(awgServers)
         } else if (protocolFilter == "GW") {

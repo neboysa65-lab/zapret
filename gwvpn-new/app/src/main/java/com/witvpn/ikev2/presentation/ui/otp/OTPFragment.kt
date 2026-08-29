@@ -18,7 +18,6 @@ import com.witvpn.ikev2.presentation.utils.InAppReviewHelper
 import com.witvpn.ikev2.presentation.utils.parseApiDate
 import com.witvpn.ikev2.presentation.utils.removeSessionUserId
 import dagger.hilt.android.AndroidEntryPoint
-import org.strongswan.android.logic.VpnStateService
 
 @AndroidEntryPoint
 class OTPFragment : BaseFragment<FragmentSettingsBinding>(R.layout.fragment_settings) {

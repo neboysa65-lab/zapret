@@ -8,7 +8,6 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import org.strongswan.android.data.VpnProfileDataSource
 import javax.inject.Singleton
 
 @Module
@@ -25,11 +24,5 @@ object LocalSourceModule {
     @Provides
     fun provideAppSettings(sharedPreferences: SharedPreferences): AppSettings {
         return AppSettings(sharedPreferences)
-    }
-
-    @Singleton
-    @Provides
-    fun provideVpnProfileDataSource(@ApplicationContext context: Context): VpnProfileDataSource {
-        return VpnProfileDataSource(context)
     }
 }

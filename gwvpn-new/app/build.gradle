@@ -54,8 +54,6 @@ android {
 
         buildConfigField("String", "GRAYS_BILLING_URL", '"https://api-gwvpn-app.vpnhub.xyz/vpn/client/payment/new?userId=%s"')
         buildConfigField("boolean", "CHECK_IN_APP_UPDATES", "true")
-        buildConfigField("boolean", "CONNECTION_TIME_LIMIT_FOR_FREE", "false")
-        buildConfigField("long", "CONNECTION_TIME_LIMIT_MINUTES", "120")
 
         ndk {
             abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'

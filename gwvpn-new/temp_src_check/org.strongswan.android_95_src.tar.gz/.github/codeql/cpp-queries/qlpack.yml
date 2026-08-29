@@ -1,3 +1,0 @@
-name: strongswan/cpp-queries
-dependencies:
-  codeql/cpp-all: "*"

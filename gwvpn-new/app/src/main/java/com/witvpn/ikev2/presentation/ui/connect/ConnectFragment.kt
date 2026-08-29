@@ -1,49 +1,31 @@
 package com.witvpn.ikev2.presentation.ui.connect
 
-import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Color
 import android.util.Log
 import android.view.View
 import android.widget.Toast
-import androidx.core.view.isVisible
 import androidx.fragment.app.activityViewModels
-import androidx.fragment.app.viewModels
-import androidx.lifecycle.Observer
 import androidx.navigation.fragment.findNavController
-import com.witvpn.ikev2.BuildConfig
 import com.witvpn.ikev2.R
 import com.witvpn.ikev2.databinding.FragmentConnect2Binding
 import com.witvpn.ikev2.domain.model.Server
-import com.witvpn.ikev2.domain.model.Server.Companion.isAutoConnect
 import com.witvpn.ikev2.domain.model.Status
 import com.witvpn.ikev2.features.splittunnel.SplitTunnelMode
 import com.witvpn.ikev2.features.splittunnel.SplitTunnelStore
 import com.witvpn.ikev2.presentation.CasAds
 import com.witvpn.ikev2.presentation.base.BaseFragment
-import com.witvpn.ikev2.presentation.ui.MainDelegate
-import com.witvpn.ikev2.presentation.ui.MainTabUIDelegate
 import com.witvpn.ikev2.presentation.ui.ShareViewModel
-import com.witvpn.ikev2.presentation.ui.connectlimit.TimeLimitExpiredDialog
-import com.witvpn.ikev2.presentation.ui.connectlimit.VpnServiceLimitListener
 import com.witvpn.ikev2.presentation.ui.servers.ServersViewModel
-import com.witvpn.ikev2.presentation.utils.FragmentUtils
-import com.witvpn.ikev2.presentation.utils.InAppReviewHelper
 import com.witvpn.ikev2.presentation.utils.Util
 import com.witvpn.ikev2.presentation.utils.ConnectionTracker
 import com.witvpn.ikev2.presentation.utils.SharePrefs
-import com.witvpn.ikev2.presentation.utils.parseApiDate
 import com.witvpn.ikev2.presentation.utils.getStringPref
+import com.witvpn.ikev2.presentation.utils.parseApiDate
 import com.witvpn.ikev2.presentation.utils.putStringPref
-import com.witvpn.ikev2.presentation.widget.bottomnav.BottomNavBar
 import dagger.hilt.android.AndroidEntryPoint
-import org.strongswan.android.data.VpnProfile
-import org.strongswan.android.logic.VpnStateService
-import org.strongswan.android.ui.VpnProfileControlActivity
-import org.strongswan.android.utils.Utils
 import timber.log.Timber
-import java.util.concurrent.TimeUnit
 
 import android.content.res.ColorStateList
 import com.witvpn.ikev2.vless.VlessManager
@@ -58,8 +40,6 @@ import android.net.Uri
 import android.app.Dialog
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.DialogFragment
-import androidx.preference.PreferenceManager
-import org.strongswan.android.utils.Constants
 import android.os.Bundle
 import android.os.Build
 import io.github.vyomtunnel.sdk.VyomVpnManager
@@ -131,22 +111,6 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             context?.let { VlessManager.stopVpn(it) }
             updateVlessState(false)
             showProgress(false)
-            Toast.makeText(context, "Connection timed out", Toast.LENGTH_SHORT).show()
-        }
-        if (viewModel.stateLiveData.value == VpnStateService.State.CONNECTING) {
-            viewModel.getCurrentVPNProfile()?.also { vpnProfile: VpnProfile ->
-                disconnectTo(vpnProfile)
-            } ?: run {
-                 // Fallback if no profile is available but state is CONNECTING
-                 // We can't easily disconnect without profile ID, but we can try to force UI reset
-                 try {
-                     binding.tvState.text = getString(R.string.connect)
-                     changeButtonColor(false)
-                 } catch (_: Exception) {
-                     // View могла быть разрушена при живом фрагменте
-                 }
-                 showProgress(false)
-            }
             Toast.makeText(context, "Connection timed out", Toast.LENGTH_SHORT).show()
         }
     }
@@ -467,10 +431,9 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             }
             showProgress(true)
         } else {
-            // Ничего не подключено. Если мы на вкладке не-IKEv2 (GW/AWG/VLESS),
+            // Ничего не подключено. Если мы на вкладке GW/AWG/VLESS,
             // приводим кнопку в состояние «Connect» и убираем прогресс — иначе
             // после обрыва туннеля в фоне на экране «залипает» Connecting.../Disconnect.
-            // IKEv2 сверяется отдельно через stateLiveData observer.
             if (isGwMode || isAwgMode || isVlessMode) {
                 isVlessConnected = false
                 showProgress(false)
@@ -497,50 +460,25 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
 
     private val shareViewModel: ShareViewModel by activityViewModels()
 
-    private val viewModel: ConnectViewModel by viewModels()
-
-    private var animator: ValueAnimator? = null
-
-    private val delegate: MainDelegate? by lazy {
-        return@lazy FragmentUtils.getParent(this, MainDelegate::class.java)
-    }
-
     override fun initBinding(view: View): FragmentConnect2Binding {
         return FragmentConnect2Binding.bind(view)
     }
 
     @SuppressLint("SetTextI18n")
     override fun initView() {
-        updateServerButton(getIkev2Draft())
-        // IKEv2 убран из пользовательского UI: кнопка не отображается, а вес
-        // селектора перераспределён на три оставшихся протокола. Ядро и логика
-        // IKEv2 не тронуты — активная сессия по-прежнему показывается корректно.
-        binding.protocolSelector.weightSum = 3f
-        binding.btnIpv4.isVisible = false
         setProtocol(resolveInitialProtocol())
-        
-        binding.btnIpv4.setOnClickListener {
-            if (isVlessConnected || VyomVpnManager.currentState == VyomState.CONNECTING || AmneziaWGManager.isConnected() || GwManager.isConnected() || GwManager.state == GwManager.State.CONNECTING) return@setOnClickListener
-            val state = viewModel.stateLiveData.value
-            if (state == VpnStateService.State.CONNECTED || state == VpnStateService.State.CONNECTING) return@setOnClickListener
-            setProtocol("IKEv2")
-        }
+
         binding.btnVless.setOnClickListener {
-            val state = viewModel.stateLiveData.value
-            if (state == VpnStateService.State.CONNECTED || state == VpnStateService.State.CONNECTING || AmneziaWGManager.isConnected()) return@setOnClickListener
             if (isVlessConnected || VyomVpnManager.currentState == VyomState.CONNECTING || GwManager.isConnected() || GwManager.state == GwManager.State.CONNECTING) return@setOnClickListener
+            if (AmneziaWGManager.isConnected()) return@setOnClickListener
             setProtocol("VLESS")
         }
         binding.btnAwg.setOnClickListener {
-            val state = viewModel.stateLiveData.value
-            if (state == VpnStateService.State.CONNECTED || state == VpnStateService.State.CONNECTING) return@setOnClickListener
             if (isVlessConnected || VyomVpnManager.currentState == VyomState.CONNECTING || AmneziaWGManager.isConnected()) return@setOnClickListener
             if (GwManager.isConnected() || GwManager.state == GwManager.State.CONNECTING) return@setOnClickListener
             setProtocol("AWG")
         }
         binding.btnGw.setOnClickListener {
-            val state = viewModel.stateLiveData.value
-            if (state == VpnStateService.State.CONNECTED || state == VpnStateService.State.CONNECTING) return@setOnClickListener
             if (isVlessConnected || VyomVpnManager.currentState == VyomState.CONNECTING || AmneziaWGManager.isConnected()) return@setOnClickListener
             if (GwManager.isConnected() || GwManager.state == GwManager.State.CONNECTING) return@setOnClickListener
             setProtocol("GW")
@@ -606,91 +544,12 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                 }
             } else if (isGwMode) {
                 handleGwConnectClick()
-            } else if (it.isEnabled) {
-                // Allow cancel during CONNECTING state for IKEv2
-                if (viewModel.stateLiveData.value == VpnStateService.State.CONNECTING) {
-                    viewModel.getCurrentVPNProfile()?.also { vpnProfile: VpnProfile ->
-                        disconnectTo(vpnProfile)
-                    }
-                    // Reset UI immediately
-                    handler.removeCallbacks(connectionTimeoutRunnable)
-                    binding.tvState.text = getString(R.string.connect)
-                    changeButtonColor(false)
-                    showProgress(false)
-                    return@setOnClickListener
-                }
-                if (BuildConfig.CONNECTION_TIME_LIMIT_FOR_FREE
-                    && !shareViewModel.isPremium
-                    && viewModel.isLimitElapsed.value == true
-                    && viewModel.stateLiveData.value != VpnStateService.State.CONNECTED) {
-                    limitElapsedDialog()
-                } else {
-                    checkAndShowAppUpdate()
-                    val serverDraft = getIkev2Draft()
-                    if (serverDraft == null) {
-                        openServerList()
-                    } else if (serverDraft.isAutoConnect) {
-                        if (viewModel.stateLiveData.value == VpnStateService.State.CONNECTED) {
-                            viewModel.getCurrentVPNProfile()?.also { vpnProfile: VpnProfile ->
-                                disconnectTo(vpnProfile)
-                            }
-                        } else {
-                            connectToRandom()
-                        }
-                    } else {
-                        if (viewModel.stateLiveData.value == VpnStateService.State.CONNECTED) {
-                            viewModel.getCurrentVPNProfile()?.also { vpnProfile: VpnProfile ->
-                                disconnectTo(vpnProfile)
-                            }
-                        } else {
-                            connectTo(serverDraft)
-                        }
-                    }
-                }
             }
         }
 //        binding.leftMenuIcon.setOnClickListener {
 //            delegate?.openLeftMenu()
 //        }
 
-        if (!shareViewModel.isPremium) {
-            viewModel.elapsedMillisLiveData.observe(viewLifecycleOwner) {
-                val millis = VpnServiceLimitListener.MILLIS_ELAPSED_LIMIT - it
-                if (millis < 0) {
-                    binding.timeLimit.text = "00:00:00"
-                } else {
-                    TimeUnit.MILLISECONDS.toHours(millis).also { hours ->
-                        val withoutHours = millis - TimeUnit.HOURS.toMillis(hours)
-                        TimeUnit.MILLISECONDS.toMinutes(withoutHours).also { minutes ->
-                            val withoutMinutes = withoutHours - TimeUnit.MINUTES.toMillis(minutes)
-                            TimeUnit.MILLISECONDS.toSeconds(withoutMinutes).also { seconds ->
-                                binding.timeLimit.text = "%02d:%02d:%02d".format(hours, minutes, seconds)
-                            }
-                        }
-                    }
-                }
-                binding.timeLimit.isVisible = true
-            }
-            viewModel.isLimitElapsed.observe(viewLifecycleOwner) {
-                if (it) {
-                    limitElapsedDialog()
-                    binding.timeLimit.setTextColor(0xFFFF3D41.toInt())
-                } else {
-                    binding.timeLimit.setTextColor(Color.WHITE)
-                }
-            }
-//            binding.timeLimit.setOnClickListener {
-//                AboutLimitDialog(requireContext()).apply {
-//                    closeButton.setOnClickListener {
-//                        dismiss()
-//                    }
-//                    actionButton.setOnClickListener {
-//                        FragmentUtils.getParent(this@ConnectFragment, MainTabUIDelegate::class.java)?.setCurrentTab(BottomNavBar.TAB_PREMIUM)
-//                        dismiss()
-//                    }
-//                }.show()
-//            }
-        }
         initChart()
         binding.pro.root.setOnClickListener { navToPaywall() }
 
@@ -711,96 +570,12 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         }
     }
 
-    private fun limitElapsedDialog() {
-        TimeLimitExpiredDialog(requireContext()).apply {
-            closeButton.setOnClickListener {
-                dismiss()
-            }
-            actionButton.setOnClickListener {
-                FragmentUtils.getParent(this@ConnectFragment, MainTabUIDelegate::class.java)?.setCurrentTab(BottomNavBar.TAB_PREMIUM)
-                dismiss()
-            }
-        }.show()
-    }
-
-    private var randomObserver: Observer<List<Server>>? = null
-
-    private fun connectToRandom() {
-        binding.btnConnect.isEnabled = false
-        randomObserver?.let { viewModel2.serversList.removeObserver(it) }
-        randomObserver = Observer<List<Server>> { servers ->
-            if (servers.isNullOrEmpty()) return@Observer
-            randomObserver?.let { viewModel2.serversList.removeObserver(it) }
-            randomObserver = null
-            binding.btnConnect.isEnabled = true
-            val filtered = if (shareViewModel.isPremium) servers else servers.filter { it.premium != true }
-            val server = filtered.randomOrNull() ?: servers.randomOrNull() ?: return@Observer
-            shareViewModel.execute(server)
-            connectTo(server)
-        }
-        viewModel2.serversList.observe(viewLifecycleOwner, randomObserver!!)
-    }
-
-    private fun connectTo(server: Server) {
-        val activity = requireActivity()
-        val intent = Intent(context, VpnProfileControlActivity::class.java).apply {
-            action = VpnProfileControlActivity.START_PROFILE
-            putExtra(VpnProfileControlActivity.EXTRA_VPN_PROFILE_ID, server.uuid)
-        }
-        if (shareViewModel.isPremium) {
-            activity.startActivity(intent)
-        } else {
-            CasAds.showConnectAd(activity) {
-                activity.startActivity(intent)
-            }
-        }
-        // IKEv2 больше не репортим в API: онлайн IKEv2 сервер считает сам
-        // по метрикам серверов (node_exporter, ipsec_clients).
-    }
-
-    private fun disconnectTo(profile: VpnProfile) {
-        val activity = requireActivity()
-        val intent = Intent(activity, VpnProfileControlActivity::class.java).apply {
-            action = VpnProfileControlActivity.DISCONNECT
-            putExtra(VpnProfileControlActivity.SILENT_OPTION, true)
-            putExtra(VpnProfileControlActivity.EXTRA_VPN_PROFILE_ID, profile.uuid)
-        }
-        if (shareViewModel.isPremium) {
-            activity.startActivity(intent)
-        } else {
-            // Force UI update immediately to reflect user intent
-            if (isAdded) {
-                binding.tvState.text = getString(R.string.connect)
-                changeButtonColor(false)
-                showProgress(false)
-            }
-            activity.startActivity(intent)
-        }
-        // IKEv2 disconnect больше не репортим в API (см. connectTo).
-    }
-
-    private fun checkAndShowAppUpdate() {
-        if (viewModel.stateLiveData.value == VpnStateService.State.CONNECTED) {
-            if (viewModel.appSettings.needShowInAppReview()) {
-                activity?.also {
-                    InAppReviewHelper.requestInAppReview(it)
-                }
-                viewModel.appSettings.resetAppReviewCounter()
-            } else {
-                viewModel.appSettings.approximateAppReviewCounter()
-            }
-        }
-    }
-
     private val viewModel2: ServersViewModel by activityViewModels()
 
     override fun initObserve() {
         shareViewModel.userLiveData.observe(viewLifecycleOwner){
             viewModel2.execute(it)
         }
-//        shareViewModel.userLiveData.value?.let { user ->
-//            viewModel2.execute(user)
-//        }
         viewModel2.serversAwgList.observe(viewLifecycleOwner) { _ ->
             if (isAwgMode) {
                 val draft = getAwgDraft()
@@ -816,16 +591,10 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         }
         shareViewModel.serverLiveData.observe(viewLifecycleOwner) { (status, savedServer, _) ->
             if (status == Status.SUCCESS) {
-                val servers = viewModel2.serversList.value
-                val awgServers = viewModel2.serversAwgList.value?.map { com.witvpn.ikev2.domain.model.Server.fromAwg(it) }
-                val allServers = mutableListOf<com.witvpn.ikev2.domain.model.Server>()
-                servers?.let { allServers.addAll(it) }
-                awgServers?.let { allServers.addAll(it) }
-
-                Log.d("ConnectFragment", "initObserve 1 ${savedServer?.country} servers ${allServers.map { it.country }}")
+                // Драфт протокола, которого больше нет (старые установки с
+                // IKEv2), или сервер, пропавший из свежего списка, — чистим.
                 val shouldClearSavedServer = savedServer?.let { server ->
                     when {
-                        server.isAutoConnect -> false
                         server.protocol.equals("awg", ignoreCase = true) -> {
                             val awgServerList = viewModel2.serversAwgList.value ?: emptyList()
                             awgServerList.isNotEmpty() && awgServerList.none { it.ipAddress == server.ipAddress }
@@ -834,19 +603,16 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                             val gwServerList = viewModel2.serversGwList.value
                             gwServerList != null && gwServerList.isNotEmpty() && gwServerList.none { it.ipAddress == server.ipAddress }
                         }
-                        else -> {
-                            val ikev2ServerList = viewModel2.serversList.value ?: emptyList()
-                            ikev2ServerList.isNotEmpty() && ikev2ServerList.none { it.ipAddress == server.ipAddress }
-                        }
+                        else -> true
                     }
                 } ?: false
 
                 if (shouldClearSavedServer) {
                     Log.d(
                         "ConnectFragment",
-                        "Saved server is not available. Clear draft. savedServer: ${savedServer?.country} servers ${allServers.map { it.country }}"
+                        "Saved server is not available. Clear draft. savedServer: ${savedServer?.country}"
                     )
-                    val clearedProtocol = savedServer?.protocol ?: "ikev2"
+                    val clearedProtocol = savedServer?.protocol ?: "gw"
                     Server.clearDraftForProtocol(clearedProtocol)
                 } else if (savedServer != null) {
                     if (savedServer.protocol.equals("awg", ignoreCase = true) && !isAwgMode) {
@@ -856,73 +622,12 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                         setProtocol("GW")
                     }
 
-                    // Check if we need to auto-reconnect IKEv2 to new server
-                    val isSavedServerIkev2 = savedServer.protocol.equals("ikev2", ignoreCase = true) || savedServer.isAutoConnect
-                    val isIkev2Connected = viewModel.stateLiveData.value == VpnStateService.State.CONNECTED 
-                        || viewModel.stateLiveData.value == VpnStateService.State.CONNECTING
-                    val currentProfile = viewModel.getCurrentVPNProfile()
-                    val isDifferentServer = currentProfile != null && currentProfile.uuid.toString() != savedServer.uuid
-                    
-                    if (!isVlessMode && !isAwgMode && isSavedServerIkev2 && isIkev2Connected && isDifferentServer) {
-                        // Auto-reconnect to new server without ads
-                        updateServerButton(value = savedServer)
-                        disconnectTo(currentProfile!!)
-                        handler.removeCallbacks(connectionTimeoutRunnable)
-                        showProgress(false)
-                        handler.postDelayed({
-                            if (isAdded) {
-                                connectToWithoutAd(savedServer)
-                            }
-                        }, 800)
-                    } else {
-                        when {
-                            isAwgMode -> updateAwgServerUI()
-                            isGwMode -> reconnectGwIfServerChanged(savedServer)
-                            !isVlessMode -> updateServerButton(value = savedServer)
-                        }
+                    when {
+                        isAwgMode -> updateAwgServerUI()
+                        isGwMode -> reconnectGwIfServerChanged(savedServer)
                     }
                 }
             }
-        }
-
-        viewModel.stateLiveData.observe(viewLifecycleOwner) { state ->
-            Timber.d("State " + state?.name)
-            // Skip IKEv2 state updates when VLESS is connected to avoid resetting VLESS UI
-            if (isVlessConnected ||
-                (isVlessMode && VyomVpnManager.currentState == VyomState.CONNECTED) ||
-                isAwgMode || isGwMode) {
-                return@observe
-            }
-            when (state) {
-                VpnStateService.State.CONNECTED -> {
-                    binding.tvState.text = getString(R.string.disconnect)
-                    animator?.cancel()
-                    showProgress(false)
-                    changeButtonColor(true)
-                    handler.removeCallbacks(connectionTimeoutRunnable)
-                }
-                VpnStateService.State.CONNECTING -> {
-                    fakeProgress()
-                    showProgress(true)
-                    binding.tvState.text = getString(R.string.connecting, "...")
-                    changeButtonColor(false)
-                    handler.removeCallbacks(connectionTimeoutRunnable)
-                    handler.postDelayed(connectionTimeoutRunnable, 30000)
-                }
-                else -> {
-                    animator?.cancel()
-                    handler.removeCallbacks(connectionTimeoutRunnable)
-                    binding.tvState.text = getString(R.string.connect)
-                    changeButtonColor(false)
-                    showProgress(false)
-                    viewModel.syncDataIfNeed(shareViewModel.userLiveData.value)
-                }
-            }
-        }
-
-        viewModel.trafficLiveData.observe(viewLifecycleOwner) { (upStreamSpeed, downStreamSpeed) ->
-            binding.tvUpload.text = Utils.parseTotal(upStreamSpeed)
-            binding.tvDownload.text = Utils.parseTotal(downStreamSpeed)
         }
     }
 
@@ -932,55 +637,12 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
 //        binding.traffic.chartDownload.init(intArrayOf(5, 30, 65, 50, 100))
     }
 
-    private fun fakeProgress(startDelay: Long = 0L) {
-//        binding.viewProgress.visibility = View.VISIBLE
-//        val layoutParam: FrameLayout.LayoutParams =
-//            binding.viewProgress.layoutParams as FrameLayout.LayoutParams
-//        val originWidth = binding.viewProgress.width
-//        animator = ValueAnimator.ofFloat(0f, 100f)
-//            .apply {
-//                duration = 0L
-//                interpolator = DecelerateInterpolator()
-//                setStartDelay(startDelay)
-//                addUpdateListener {
-//                    val value = it.animatedValue as Float
-//                    val process = originWidth.times(value) / 100
-//                    layoutParam.width = process.toInt()
-//                    //binding.tvState.text = getString(R.string.connecting, "${value.toInt()}%")
-//                    binding.viewProgress.layoutParams = layoutParam
-//                    if (binding.viewProgress.visibility == View.INVISIBLE) {
-//                        binding.viewProgress.visibility = View.VISIBLE
-//                    }
-//                }
-//
-//                addListener(object : Animator.AnimatorListener {
-//                    override fun onAnimationRepeat(p0: Animator) {
-//                    }
-//
-//                    override fun onAnimationEnd(p0: Animator) {
-//                        if (viewModel.stateLiveData.value != VpnStateService.State.CONNECTED) {
-//                            binding.tvState.text = getString(R.string.waiting)
-//                        }
-//                    }
-//
-//                    override fun onAnimationCancel(p0: Animator) {
-//                    }
-//
-//                    override fun onAnimationStart(p0: Animator) {
-//                    }
-//
-//                })
-//            }
-        animator?.start()
-    }
-
     private fun openServerList() {
         try {
             val bundle = android.os.Bundle().apply {
                 putString("PROTOCOL", when {
                     isAwgMode -> "AWG"
-                    isGwMode -> "GW"
-                    else -> "IKEv2"
+                    else -> "GW"
                 })
             }
             findNavController().navigate(R.id.serversFragment, bundle)
@@ -1116,15 +778,6 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
 
                 updateGwServerUI()
             }
-            else -> {
-                // IKEv2 — сброс лого Hysteria с заголовка
-                clearConnectionTitleLeadingIcon()
-                binding.btnIpv4.setBackgroundResource(R.drawable.shape_stadium)
-                binding.btnIpv4.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#3F4652"))
-                binding.btnIpv4.setTextColor(Color.WHITE)
-
-                updateServerButton(getIkev2Draft())
-            }
         }
 
         // Синим кнопка становится только при реальном CONNECTED. CONNECTING
@@ -1136,15 +789,12 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         val awgConnected = isAwgMode && AmneziaWGManager.isConnected()
         val gwConnected = isGwMode && GwManager.isConnected()
         val gwConnecting = isGwMode && GwManager.state == GwManager.State.CONNECTING
-        val ikeState = viewModel.stateLiveData.value
-        val ikeConnected = !isVlessMode && !isAwgMode && !isGwMode && ikeState == VpnStateService.State.CONNECTED
-        val ikeConnecting = !isVlessMode && !isAwgMode && !isGwMode && ikeState == VpnStateService.State.CONNECTING
         when {
-            vlessConnected || awgConnected || gwConnected || ikeConnected -> {
+            vlessConnected || awgConnected || gwConnected -> {
                 updateVlessState(true)
                 showProgress(false)
             }
-            vlessConnecting || gwConnecting || ikeConnecting -> {
+            vlessConnecting || gwConnecting -> {
                 binding.tvState.text = getString(R.string.connecting, "...")
                 changeButtonColor(false)
                 showProgress(true)
@@ -1158,11 +808,6 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
     }
 
     private fun resolveInitialProtocol(): String {
-        val ikeState = viewModel.stateLiveData.value
-        if (ikeState == VpnStateService.State.CONNECTED || ikeState == VpnStateService.State.CONNECTING) {
-            return "IKEv2"
-        }
-
         val vyomState = VyomVpnManager.currentState
         if (vyomState == VyomState.CONNECTED || vyomState == VyomState.CONNECTING) {
             return "VLESS"
@@ -1178,8 +823,7 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
 
         val savedProtocol = getStringPref(SharePrefs.KEY_SELECTED_PROTOCOL, "GW") ?: "GW"
         return when (savedProtocol) {
-            // "IKEv2" сознательно не восстанавливается: протокол скрыт из UI,
-            // сохранённый ранее выбор уходит в дефолтный GW.
+            // Протокол восстанавливается только из живых: GW, AWG, VLESS.
             "AWG", "VLESS", "GW" -> savedProtocol
             else -> "GW"
         }
@@ -1236,15 +880,6 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         binding.connectionLocation.setImageResource(R.drawable.ic_globe)
         binding.connectionTitle.text = getString(R.string.select_the_fastest_server)
         clearConnectionTitleLeadingIcon()
-    }
-
-    private fun getIkev2Draft(): Server? {
-        val draft = Server.getDraftForProtocol("ikev2") ?: return null
-        return if (draft.protocol.equals("ikev2", ignoreCase = true) || draft.isAutoConnect) {
-            draft
-        } else {
-            null
-        }
     }
 
     private fun getAwgDraft(): Server? {
@@ -1543,20 +1178,6 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             return
         }
 
-        // Check if IKEv2 is connected and stop it
-        if (viewModel.stateLiveData.value == VpnStateService.State.CONNECTED) {
-            viewModel.getCurrentVPNProfile()?.let { disconnectTo(it) }
-            showProgress(true)
-            binding.tvState.text = getString(R.string.connecting, "...")
-            // Wait for IKEv2 to disconnect
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                if (isAdded) {
-                    startVlessVpnWithAdCheck()
-                }
-            }, 1500)
-            return
-        }
-
         startVlessVpnWithAdCheck()
     }
 
@@ -1710,21 +1331,6 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                 updateVlessServerUI()
             }
         }
-        // IKEv2 is handled by serverLiveData observer
-    }
-
-    /**
-     * Connect to IKEv2 server without showing ads (for server switching).
-     */
-    private fun connectToWithoutAd(server: Server) {
-        val activity = requireActivity()
-        val intent = Intent(context, VpnProfileControlActivity::class.java).apply {
-            action = VpnProfileControlActivity.START_PROFILE
-            putExtra(VpnProfileControlActivity.EXTRA_VPN_PROFILE_ID, server.uuid)
-        }
-        activity.startActivity(intent)
-        // IKEv2 больше не репортим в API: онлайн IKEv2 сервер считает сам
-        // по метрикам серверов (node_exporter, ipsec_clients).
     }
 
     //endregion

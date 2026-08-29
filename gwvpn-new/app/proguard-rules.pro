@@ -47,9 +47,6 @@
 # Строки-константы не «склеивать» с местами использования.
 -adaptclassstrings com.witvpn.gw.**
 
-# Существующие правила проекта (JNI strongSwan) — не трогаем.
--keep class org.strongswan.android.** { *; }
-
 # ─── Missing classes: compile-only ссылки сторонних SDK (не влияют на работу) ───
 -dontwarn com.google.ads.mediation.common.AgeRestrictedTreatmentUtils
 -dontwarn java.beans.ConstructorProperties

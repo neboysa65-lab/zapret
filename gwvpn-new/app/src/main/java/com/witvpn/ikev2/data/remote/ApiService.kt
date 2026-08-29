@@ -3,17 +3,12 @@ package com.witvpn.ikev2.data.remote
 import com.witvpn.ikev2.data.remote.model.AdsResponse
 import com.witvpn.ikev2.data.remote.model.LoginResponse
 import com.witvpn.ikev2.data.remote.model.PackagesResponse
-import com.witvpn.ikev2.data.remote.model.ServersResponse
 import okhttp3.Response
 import okhttp3.ResponseBody
 import retrofit2.Call
 import retrofit2.http.*
 
 interface ApiService {
-    @POST("user/server")
-    @FormUrlEncoded
-    suspend fun getServers(@FieldMap param: MutableMap<String, Any>): ServersResponse
-
     @POST("user/server_awg")
     @FormUrlEncoded
     suspend fun getServersAwg(@FieldMap param: MutableMap<String, Any>): com.witvpn.ikev2.data.remote.model.ServersAwgResponse

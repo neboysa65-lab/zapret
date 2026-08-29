@@ -1,6 +1,7 @@
 package com.witvpn.ikev2.presentation
 
 import android.app.ActivityManager
+import android.app.Application
 import android.content.Context
 import android.os.Build
 import android.os.Process
@@ -14,13 +15,12 @@ import com.witvpn.ikev2.presentation.utils.GooglePlayHelper
 import com.witvpn.ikev2.presentation.utils.RemoteConfigManager
 import com.witvpn.ikev2.presentation.utils.connectivity.ConnectivityProvider
 import dagger.hilt.android.HiltAndroidApp
-import org.strongswan.android.logic.StrongSwanApplication
 import timber.log.Timber
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 @HiltAndroidApp
-open class MyApp : StrongSwanApplication() {
+class MyApp : Application() {
     companion object {
         lateinit var self: MyApp
             private set

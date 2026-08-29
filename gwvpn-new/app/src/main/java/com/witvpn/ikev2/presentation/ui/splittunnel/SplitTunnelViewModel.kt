@@ -1,20 +1,17 @@
 package com.witvpn.ikev2.presentation.ui.splittunnel
 
-import android.app.Service
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.IBinder
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MediatorLiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
+import com.witvpn.gw.GwManager
 import com.witvpn.ikev2.awg.AmneziaWGManager
 import com.witvpn.ikev2.features.splittunnel.SplitTunnelMode
 import com.witvpn.ikev2.features.splittunnel.SplitTunnelStore
@@ -25,7 +22,6 @@ import io.github.vyomtunnel.sdk.VyomState
 import io.github.vyomtunnel.sdk.VyomVpnManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import org.strongswan.android.logic.VpnStateService
 import java.text.Collator
 import javax.inject.Inject
 
@@ -42,7 +38,7 @@ data class SplitTunnelApp(
 @HiltViewModel
 class SplitTunnelViewModel @Inject constructor(
     @ApplicationContext private val contextApp: Context
-) : BaseViewModel(), VpnStateService.VpnStateListener {
+) : BaseViewModel() {
 
     private val allApps = MutableLiveData<List<SplitTunnelApp>?>(null)
     private val query = MutableLiveData("")
@@ -78,24 +74,6 @@ class SplitTunnelViewModel @Inject constructor(
     /** True while any of the VPN backends is connected or connecting. */
     val vpnActive = MutableLiveData(false)
 
-    private var ikev2State: VpnStateService.State? = null
-    private var stateService: VpnStateService? = null
-    private var stateServiceBound = false
-
-    private val stateServiceConnection = object : ServiceConnection {
-        override fun onServiceDisconnected(name: ComponentName?) {
-            stateService = null
-            refreshVpnActive()
-        }
-
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            stateService = (binder as? VpnStateService.LocalBinder)?.service
-            stateService?.registerListener(this@SplitTunnelViewModel)
-            ikev2State = stateService?.state
-            refreshVpnActive()
-        }
-    }
-
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             // An app was installed, updated or removed — refresh the list.
@@ -104,15 +82,9 @@ class SplitTunnelViewModel @Inject constructor(
     }
 
     init {
-        try {
-            stateServiceBound = contextApp.bindService(
-                Intent(contextApp, VpnStateService::class.java),
-                stateServiceConnection,
-                Service.BIND_AUTO_CREATE
-            )
-        } catch (e: Exception) {
-            stateServiceBound = false
-        }
+        // Снимок активности VPN на момент входа на экран (раньше он приходил
+        // из биндинга к IKEv2-сервису; теперь просто вычисляем сразу).
+        refreshVpnActive()
 
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
@@ -139,29 +111,14 @@ class SplitTunnelViewModel @Inject constructor(
         } catch (e: Exception) {
             // Already unregistered.
         }
-        stateService?.unregisterListener(this)
-        if (stateServiceBound) {
-            try {
-                contextApp.unbindService(stateServiceConnection)
-            } catch (e: Exception) {
-                // Service already unbound.
-            }
-        }
-    }
-
-    /** VpnStateService.VpnStateListener — IKEv2 state changed. */
-    override fun stateChanged() {
-        ikev2State = stateService?.state
-        refreshVpnActive()
     }
 
     fun refreshVpnActive() {
-        val ikev2Active = ikev2State == VpnStateService.State.CONNECTED ||
-            ikev2State == VpnStateService.State.CONNECTING
+        val gwActive = GwManager.isConnected() || GwManager.state == GwManager.State.CONNECTING
         val vyomActive = VyomVpnManager.currentState == VyomState.CONNECTED ||
             VyomVpnManager.currentState == VyomState.CONNECTING
         val awgActive = AmneziaWGManager.isConnected()
-        vpnActive.postValue(ikev2Active || vyomActive || awgActive)
+        vpnActive.postValue(gwActive || vyomActive || awgActive)
     }
 
     fun setQuery(value: String) {

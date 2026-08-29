@@ -1,12 +1,16 @@
 package com.witvpn.ikev2.domain.model
 
 import com.google.gson.Gson
-import com.witvpn.ikev2.data.remote.model.ServerObject
 import com.witvpn.ikev2.presentation.utils.SharePrefs
 import com.witvpn.ikev2.presentation.utils.getStringPref
 import com.witvpn.ikev2.presentation.utils.putStringPref
 import com.witvpn.ikev2.presentation.utils.removePref
 
+/**
+ * Единая UI-модель сервера для списка и черновиков выбора. Реальные
+ * протоколы — AWG и GW; поля CA/кредов удалены вместе с ядром IKEv2,
+ * старые драфты с ними Gson просто проигнорирует.
+ */
 data class Server(
     val id: String,
     val country: String?,
@@ -15,37 +19,10 @@ data class Server(
     val recommend: Boolean?,
     val state: String?,
     val countryCode: String?,
-    val ca_file: String?,
-    val ca_fileName: String?,
-    val p_nsm: String?,
-    val u_nsm: String?,
-    var uuid: String? = null,
-    val protocol: String? = "ikev2",
+    val protocol: String? = null,
     val configAwg: String? = null
 ) {
     companion object {
-        val AUTO_CONNECT_STAB = Server(id = "android.autoconnect", "Auto Choice", null, null, null, null, "ic_globe", null, null, null, null, null, protocol = "ikev2")
-
-        val Server.isAutoConnect: Boolean
-            get() = AUTO_CONNECT_STAB == this
-
-        fun fromObject(serverObject: ServerObject): Server {
-            return Server(
-                id = serverObject.id,
-                country = serverObject.country,
-                ipAddress = serverObject.ipAddress,
-                premium = serverObject.premium as? Boolean,
-                recommend = serverObject.recommend as? Boolean,
-                state = serverObject.state,
-                countryCode = serverObject.countryCode,
-                ca_file = serverObject.caFile,
-                ca_fileName = serverObject.caFileName,
-                p_nsm = serverObject.p_nsm,
-                u_nsm = serverObject.u_nsm,
-                protocol = "ikev2"
-            )
-        }
-        
         fun fromAwg(awg: ServerAwg): Server {
             return Server(
                 id = "awg_${awg.ipAddress}",
@@ -55,10 +32,6 @@ data class Server(
                 recommend = awg.recommend,
                 state = if (awg.state.isNullOrBlank()) awg.country else awg.state,
                 countryCode = awg.countryCode,
-                ca_file = null,
-                ca_fileName = null,
-                p_nsm = null,
-                u_nsm = null,
                 protocol = "awg",
                 configAwg = awg.config
             )
@@ -73,10 +46,6 @@ data class Server(
                 recommend = gw.recommend,
                 state = if (gw.state.isNullOrBlank()) gw.country else gw.state,
                 countryCode = gw.countryCode,
-                ca_file = null,
-                ca_fileName = null,
-                p_nsm = null,
-                u_nsm = null,
                 protocol = "gw",
                 configAwg = gw.config?.toJson()
             )
@@ -90,10 +59,6 @@ data class Server(
             }
         }
 
-        fun getDraft(): Server? {
-            return readDraft(SharePrefs.KEY_SERVER)
-        }
-
         fun getDraftForProtocol(protocol: String): Server? {
             return readDraft(draftKeyForProtocol(protocol))
         }
@@ -102,12 +67,6 @@ data class Server(
             return getStringPref(key)?.let {
                 Gson().fromJson(it, Server::class.java)
             }
-        }
-
-        fun clearDraft() {
-            removePref(SharePrefs.KEY_SERVER)
-            removePref(SharePrefs.KEY_SERVER_AWG)
-            removePref(SharePrefs.KEY_SERVER_GW)
         }
 
         fun clearDraftForProtocol(protocol: String) {
