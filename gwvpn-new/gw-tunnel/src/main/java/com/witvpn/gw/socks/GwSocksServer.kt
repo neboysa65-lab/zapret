@@ -79,9 +79,17 @@ class GwSocksServer(
      * Возвращает null при неудаче и, если похоже, что виноват не адрес, а сам
      * транспорт, дёргает [onTransportFailure] — сервис пересоберёт SSH. Без
      * этого сигнала мёртвое соединение никто не замечал: keepalive ждёт своей
-     * минуты, а приложения всё это время получают отказы.
+     * минуты, а приложения всё это время получали отказы.
+     *
+     * [countsTowardDeath] = false — для DNS-over-TCP: неудачный резолв чаще
+     * говорит о проблемах апстрим-резолвера, а не туннеля, и всплеск DNS-запросов
+     * при пробуждении телефона не должен приговаривать только что собранный SSH.
      */
-    private fun openChannel(host: String, port: Int): net.schmizz.sshj.connection.channel.direct.DirectConnection? {
+    private fun openChannel(
+        host: String,
+        port: Int,
+        countsTowardDeath: Boolean = true,
+    ): net.schmizz.sshj.connection.channel.direct.DirectConnection? {
         val transport = transportProvider()
         if (transport == null || !transport.isConnected) {
             Log.w(TAG, "open $host:$port — транспорт недоступен, просим переподключение")
@@ -93,7 +101,7 @@ class GwSocksServer(
             openFailures.set(0)
             ch
         } catch (e: Exception) {
-            val failures = openFailures.incrementAndGet()
+            val failures = if (countsTowardDeath) openFailures.incrementAndGet() else openFailures.get()
             // Обрыв транспорта — приговор сразу. Одиночный отказ по адресу
             // (закрытый порт, недоступный хост) приговором быть не должен, иначе
             // туннель переподключался бы от каждого неудачного соединения.
@@ -102,7 +110,7 @@ class GwSocksServer(
             // после потери Wi-Fi: каждое открытие канала уходит в таймаут).
             val dead = e is net.schmizz.sshj.transport.TransportException ||
                 !transport.isConnected ||
-                failures >= DEAD_AFTER_FAILURES
+                (countsTowardDeath && failures >= DEAD_AFTER_FAILURES)
             Log.w(TAG, "open $host:$port failed (подряд=$failures, dead=$dead): $e")
             if (dead) {
                 transport.markDead()
@@ -398,7 +406,7 @@ class GwSocksServer(
     }
 
     private fun resolveDnsOverTcp(host: String, query: ByteArray): ByteArray? {
-        val channel = openChannel(host, DNS_PORT) ?: return null
+        val channel = openChannel(host, DNS_PORT, countsTowardDeath = false) ?: return null
         try {
             val chOut = DataOutputStream(channel.outputStream)
             val chIn = DataInputStream(channel.inputStream)

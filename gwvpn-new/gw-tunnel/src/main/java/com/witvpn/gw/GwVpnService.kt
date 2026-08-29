@@ -59,6 +59,19 @@ class GwVpnService : TProxyService() {
 
         private const val NOTIF_TEXT_CONNECTED = "Connected via GW"
         private const val NOTIF_TEXT_RECONNECTING = "Reconnecting…"
+
+        /**
+         * Сколько опросов подряд транспорт должен выглядеть мёртвым, прежде чем
+         * supervisor объявит «реконнект». Один промах — не приговор: просевший
+         * keepalive или мигнувший сетевой callback не должны рвать туннель.
+         */
+        private const val DEAD_POLLS = 2
+
+        /** Сколько новая сеть должна продержаться, чтобы переезд считался настоящим. */
+        private const val HANDOVER_STABLE_MS = 8_000L
+
+        /** Живой экземпляр: стоп без интентов, которые из фона киать нельзя. */
+        @Volatile internal var instance: GwVpnService? = null
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -71,6 +84,15 @@ class GwVpnService : TProxyService() {
 
     @Volatile private var stopRequested = false
     private var startThread: Thread? = null
+
+    /**
+     * Эпоха действий: каждый START/STOP увеличивает счётчик, и только воркер
+     * текущей эпохи имеет право трогать состояние и TProxy. Без этого два
+     * быстрых START плодили два воркера (двойной establish()/TProxyStartService —
+     * нативный краш), а STOP, пришедший до или во время коннекта, позже
+     * разрушал уже НОВЫЙ туннель и гасил свежезапущенный сервис.
+     */
+    private val actionEpoch = java.util.concurrent.atomic.AtomicLong(0)
 
     /**
      * Туннель поднят и обязан жить, пока пользователь сам его не выключит.
@@ -94,8 +116,17 @@ class GwVpnService : TProxyService() {
     @Volatile private var networkWasLost = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    /** Сеть, на которой поднимался текущий транспорт (для детекции переезда). */
+    @Volatile private var transportNetwork: Network? = null
+    /** Сокет точно мёртв (сеть пропала/сменилась подтверждённо) — без гистерезиса. */
+    @Volatile private var transportCertainlyDead = false
+    /** Кандидат на переезд: ждём, устоится ли новая сеть, прежде чем рвать SSH. */
+    @Volatile private var handoverCandidate: Network? = null
+    @Volatile private var handoverCandidateSince = 0L
+
     override fun onCreate() {
         super.onCreate()
+        instance = this
         registerNetworkCallback()
     }
 
@@ -114,6 +145,7 @@ class GwVpnService : TProxyService() {
                 val excluded = intent.getStringArrayListExtra(EXTRA_EXCLUDED_APPS) ?: emptyList()
                 val allowed = intent.getStringArrayListExtra(EXTRA_ALLOWED_APPS) ?: emptyList()
                 GwManager.selectedServer = config
+                GwManager.activeServer = config
                 GwManager.saveConfig(this, config)
                 // Списки split-tunnel сохраняем вместе с конфигом: при рестарте
                 // сервиса системой intent приходит пустой, и раньше туннель
@@ -127,6 +159,7 @@ class GwVpnService : TProxyService() {
                 if (GwManager.wasRunning(this)) {
                     GwManager.restoreConfig(this)?.let { restored ->
                         GwManager.selectedServer = restored
+                        GwManager.activeServer = restored
                         val (excluded, allowed) = GwManager.restoreAppFilters(this)
                         startTunnel(restored, excluded, allowed, restarted = true)
                         return START_STICKY
@@ -145,10 +178,14 @@ class GwVpnService : TProxyService() {
         restarted: Boolean,
     ) {
         GwManager.setState(GwManager.State.CONNECTING)
+        val myEpoch = actionEpoch.incrementAndGet()
         val worker = thread(name = "gw-tunnel-start") {
-            stopRequested = false
             lifecycleLock.withLock {
                 try {
+                    // Пока ждали лок, мог прийти новый START/STOP — тогда этот
+                    // воркер уже не актуален и ничего не делает.
+                    if (actionEpoch.get() != myEpoch) return@withLock
+                    stopRequested = false
                     teardownTunnel()
 
                     // Fail fast and loudly: without libhev-socks5-tunnel.so the
@@ -166,7 +203,9 @@ class GwVpnService : TProxyService() {
                     var ssh: GwSshTransport? = null
                     var lastError: Exception? = null
                     for (attempt in 1..maxAttempts) {
-                        if (stopRequested) throw java.io.IOException("cancelled")
+                        if (stopRequested || actionEpoch.get() != myEpoch) {
+                            throw java.io.IOException("cancelled")
+                        }
                         // Без сети попытка гарантированно провалится и просто
                         // сожжёт одну из попыток — типичная картина при рестарте
                         // после перезагрузки телефона или при возврате из
@@ -183,7 +222,9 @@ class GwVpnService : TProxyService() {
                             Log.w(TAG, "GW connect attempt $attempt/$maxAttempts failed: ${e.message}")
                             runCatching { transport?.close() }
                             transport = null
-                            if (stopRequested) throw java.io.IOException("cancelled")
+                            if (stopRequested || actionEpoch.get() != myEpoch) {
+                                throw java.io.IOException("cancelled")
+                            }
                             if (attempt < maxAttempts) {
                                 Thread.sleep(
                                     (CONNECT_RETRY_DELAY_MS * attempt)
@@ -210,6 +251,9 @@ class GwVpnService : TProxyService() {
                     tun = pfd
 
                     val yaml = GwManager.tunYamlFile(this, socks.port)
+                    if (stopRequested || actionEpoch.get() != myEpoch) {
+                        throw java.io.IOException("cancelled")
+                    }
                     TProxyStartService(yaml.absolutePath, pfd.fd)
 
                     startStatsTimer()
@@ -226,8 +270,12 @@ class GwVpnService : TProxyService() {
                     // CONNECTING. That was the actual GW "no logs" bug.
                     Log.e(TAG, "GW tunnel failed", t)
                     teardownTunnel()
-                    val userError = if (stopRequested) null else (t.message ?: "connection error")
-                    GwManager.setState(GwManager.State.DISCONNECTED, userError)
+                    // Состояние выставляет только воркер текущей эпохи:
+                    // отменённый воркер не должен затирать то, что уже выставил
+                    // новый START/STOP, и плодить дубли DISCONNECTED.
+                    if (actionEpoch.get() == myEpoch && !stopRequested) {
+                        GwManager.setState(GwManager.State.DISCONNECTED, t.message ?: "connection error")
+                    }
                 }
             }
         }
@@ -274,19 +322,31 @@ class GwVpnService : TProxyService() {
         supervisorThread = thread(name = "gw-supervisor", isDaemon = true) {
             val active = { !stopRequested && tunnelUp && supervisorGeneration.get() == generation }
             var backoff = RECONNECT_BACKOFF_MIN_MS
+            // Сколько опросов подряд транспорт выглядел мёртвым. Двух подряд
+            // достаточно: одиночный «промах» (просевший keepalive, мигнувший
+            // callback) не должен превращаться в «реконнект» и пересборку SSH —
+            // именно из-за этого статус фапал при простое телефона.
+            var deadStreak = 0
             Log.i(TAG, "supervisor started (gen=$generation)")
             while (active()) {
                 sleepUntilKick(SUPERVISOR_POLL_MS)
                 if (!active()) break
 
                 if (transport?.isConnected == true) {
+                    deadStreak = 0
                     backoff = RECONNECT_BACKOFF_MIN_MS
                     if (GwManager.isReconnecting) {
                         GwManager.setReconnecting(false)
                         updateNotificationText(NOTIF_TEXT_CONNECTED)
                     }
+                    maybeHandleHandover()
                     continue
                 }
+
+                deadStreak++
+                // Реальная потеря/смена сети — приговор сразу, ждать второго
+                // промаха смысла нет: сокет уже не восстановить.
+                if (deadStreak < DEAD_POLLS && !networkWasLost && !transportCertainlyDead) continue
 
                 GwManager.setReconnecting(true)
                 updateNotificationText(NOTIF_TEXT_RECONNECTING)
@@ -301,6 +361,9 @@ class GwVpnService : TProxyService() {
                 Log.i(TAG, "транспорт мёртв — пересобираем SSH")
                 if (reconnectTransport()) {
                     backoff = RECONNECT_BACKOFF_MIN_MS
+                    // Свежий транспорт получает полный запас гистерезиса,
+                    // иначе смерть в первые секунды продлевала бы серию.
+                    deadStreak = 0
                     GwManager.setReconnecting(false)
                     updateNotificationText(NOTIF_TEXT_CONNECTED)
                     Log.i(TAG, "туннель восстановлен")
@@ -314,6 +377,40 @@ class GwVpnService : TProxyService() {
             Log.i(TAG, "supervisor stopped (gen=$generation)")
         }
     }
+
+    /**
+     * Переезд сети (Wi-Fi ↔ LTE) больше не рвёт транспорт мгновенно из
+     * сетевого callback'а: активная сеть умеет «мигать» (валидация Wi-Fi,
+     * короткий провал), и каждое такое колебание убивало здоровый SSH, а
+     * свежеподнятый после пробуждения телефона приговаривало снова — отсюда
+     * «подключилось и тут же реконнект». Решение принимает supervisor: новая
+     * сеть должна продержаться [HANDOVER_STABLE_MS], и только тогда сокет,
+     * висящий на старом интерфейсе, помечается мёртвым.
+     */
+    private fun maybeHandleHandover() {
+        val live = transport ?: return
+        val built = transportNetwork ?: return
+        val active = activeNetworkNow() ?: return
+        if (active == built) {
+            handoverCandidate = null
+            return
+        }
+        if (handoverCandidate != active) {
+            handoverCandidate = active
+            handoverCandidateSince = System.currentTimeMillis()
+            return
+        }
+        if (System.currentTimeMillis() - handoverCandidateSince < HANDOVER_STABLE_MS) return
+        handoverCandidate = null
+        Log.i(TAG, "переезд $built -> $active устоялся: транспорт помечен мёртвым")
+        transportCertainlyDead = true
+        live.markDead()
+        kickSupervisor()
+    }
+
+    private fun activeNetworkNow(): Network? = runCatching {
+        getSystemService(ConnectivityManager::class.java)?.activeNetwork
+    }.getOrNull()
 
     /**
      * Пересобирает SSH под работающим TUN. TUN и tun2socks не трогаем: их
@@ -337,6 +434,10 @@ class GwVpnService : TProxyService() {
                     false
                 } else {
                     transport = candidate
+                    transportNetwork = currentUnderlying()
+                    networkWasLost = false
+                    transportCertainlyDead = false
+                    handoverCandidate = null
                     socksServer?.onTransportReplaced()
                     GwManager.selectedServer?.let { GwManager.notifyConnected(it) }
                     true
@@ -427,7 +528,10 @@ class GwVpnService : TProxyService() {
         // интерфейсу, и Android не сообщает приложениям о смене связности.
         runCatching { setUnderlyingNetworks(chosen?.let { arrayOf(it) }) }
         boundNetwork = chosen
+        transportNetwork = chosen
         networkWasLost = false
+        transportCertainlyDead = false
+        handoverCandidate = null
     }
 
     private fun onNetworkSetChanged() {
@@ -442,26 +546,19 @@ class GwVpnService : TProxyService() {
             // прямо сейчас смысла нет — переподключаться некуда, — но запомнить
             // факт обрыва обязательно: сокет уже мёртв, и когда сеть вернётся,
             // ждать минуту keepalive не придётся.
-            if (previous != null) networkWasLost = true
+            if (previous != null) {
+                networkWasLost = true
+                transportCertainlyDead = true
+            }
             Log.i(TAG, "сети нет — туннель ждёт восстановления")
             kickSupervisor()
             return
         }
 
-        // previous == null без networkWasLost — это ещё не смена сети, а первый
-        // callback после старта: туннель мог подняться раньше, чем пришло
-        // onAvailable. Рвать в этот момент свежий рабочий SSH нельзя.
-        val handover = previous != null && previous != chosen
-        if (handover || networkWasLost) {
-            // Wi-Fi отвалился и телефон уехал на LTE (или наоборот, или Wi-Fi
-            // вернулся). Старый SSH-сокет висит на исчезнувшем интерфейсе и
-            // никогда ничего не доставит, но и ошибки не даст — до конца
-            // TCP-ретрансмиссий это минуты. Не ждём keepalive: помечаем мёртвым
-            // сразу и переподключаемся.
-            networkWasLost = false
-            Log.i(TAG, "смена сети $previous -> $chosen: транспорт помечен мёртвым")
-            transport?.markDead()
-        }
+        // Мгновенно транспорт больше НЕ рвём: активная сеть может «мигнуть»,
+        // и каждое колебание раньше убивало здоровый SSH. Решение о переезде
+        // принимает supervisor в maybeHandleHandover() — после того, как новая
+        // сеть устоится. Здесь только обновляем привязку VPN и будим сторожа.
         kickSupervisor()
     }
 
@@ -496,7 +593,10 @@ class GwVpnService : TProxyService() {
         return builder.establish()
     }
 
-    private fun stopEverything() {
+    fun stopEverything() {
+        // Новая эпоха делает любой идущий коннект устаревшим: его чекпоинты
+        // сработают и воркер выйдет, не тронув состояние.
+        actionEpoch.incrementAndGet()
         stopRequested = true
         // tunnelUp снимаем ДО пинка: supervisor должен увидеть «уже не нужно»
         // и выйти, а не начать очередное переподключение.
@@ -504,13 +604,26 @@ class GwVpnService : TProxyService() {
         kickSupervisor()
         runCatching { transport?.close() }
         runCatching { startThread?.interrupt() }
+        val myEpoch = actionEpoch.get()
         thread(name = "gw-tunnel-stop") {
-            lifecycleLock.withLock {
-                GwManager.clearRunning(this@GwVpnService)
-                teardownTunnel()
-                GwManager.setState(GwManager.State.DISCONNECTED)
-                stopSelf()
+            val stopped = lifecycleLock.withLock {
+                // После нас прилетел новый START — остановка отменена: свежий
+                // туннель не трогаем и сервис не гасим. Раньше этот поток
+                // разрушал уже новый туннель, а его stopSelf() уничтожал
+                // сервис прямо посреди нового коннекта — и onDestroy на
+                // main thread зависал на lifecycleLock до ANR.
+                if (actionEpoch.get() != myEpoch) {
+                    false
+                } else {
+                    GwManager.clearRunning(this@GwVpnService)
+                    teardownTunnel()
+                    GwManager.setState(GwManager.State.DISCONNECTED)
+                    true
+                }
             }
+            // stopSelf() — строго вне лока: иначе onDestroy (main thread)
+            // блокируется на этом же локе.
+            if (stopped) stopSelf()
         }
     }
 
@@ -608,10 +721,25 @@ class GwVpnService : TProxyService() {
         // переподключаться уже разрушаемый туннель.
         stopRequested = true
         tunnelUp = false
+        actionEpoch.incrementAndGet()
         supervisorGeneration.incrementAndGet()
         kickSupervisor()
         unregisterNetworkCallback()
-        lifecycleLock.withLock { runCatching { teardownTunnel() } }
+        if (instance === this) instance = null
+        // Никогда не ждём lifecycleLock на main thread: воркер коннекта держит
+        // его десятки секунд, и зависший onDestroy выглядел как «приложение
+        // вылетело» (ANR). Не дождались — teardown делает фоновый поток.
+        if (!lifecycleLock.tryLock()) {
+            thread(name = "gw-tunnel-destroy", isDaemon = true) {
+                lifecycleLock.withLock { runCatching { teardownTunnel() } }
+            }
+        } else {
+            try {
+                runCatching { teardownTunnel() }
+            } finally {
+                lifecycleLock.unlock()
+            }
+        }
         super.onDestroy()
     }
 }

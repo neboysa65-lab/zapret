@@ -70,12 +70,13 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
                 throw IOException("unsupported")
         })
         client.setConnectTimeout(CONNECT_TIMEOUT_MS)
-        // Таймаут чтения сокета остаётся нулевым: транспорт мультиплексный и
-        // законно простаивает сколько угодно. А вот открытие канала ограничиваем —
-        // при мёртвом соединении оно ждало ответа сервера бесконечно, и каждое
-        // соединение приложения просто ВИСЛО (хуже, чем быстрый отказ), а сигнала
-        // «транспорт пора пересобрать» не приходило вообще.
-        client.setTimeout(0)
+        // Чтение сокета — с конечным таймаутом, а не нулевым: при «TCP принял,
+        // а SSH молчит» (дохлый узел за CDN) ридер с SO_TIMEOUT=0 блокировался
+        // навсегда, воркер коннекта вечно держал lifecycleLock, и стоп/рестарт
+        // сервиса висел до ANR. 90с безопасны: живой транспорт гарантированно
+        // подкладывает пакеты keepalive'ом каждые 20с, а таймаут честно убивает
+        // молчащий. Мультиплексному простаивающему каналу это не мешает.
+        client.setTimeout(SOCKET_READ_TIMEOUT_MS)
         client.connection.timeoutMs = CHANNEL_OPEN_TIMEOUT_MS
         client.connection.keepAlive.keepAliveInterval = KEEPALIVE_INTERVAL_SEC
         (client.connection.keepAlive as? KeepAliveRunner)?.maxAliveCount = KEEPALIVE_MAX_MISSED
@@ -132,6 +133,13 @@ class GwSshTransport(private val config: GwServerConfig) : Closeable {
 
     companion object {
         private const val CONNECT_TIMEOUT_MS = 20_000
+
+        /**
+         * SO_TIMEOUT ридера: больше трёх keepalive-интервалов, чтобы живой
+         * простаивающий транспорт не убивало, но конечный — чтобы «TCP принял,
+         * SSH молчит» не вешало воркер коннекта навсегда.
+         */
+        private const val SOCKET_READ_TIMEOUT_MS = 90_000
 
         /** Ограничение на открытие одного канала (direct-tcpip). */
         private const val CHANNEL_OPEN_TIMEOUT_MS = 20_000

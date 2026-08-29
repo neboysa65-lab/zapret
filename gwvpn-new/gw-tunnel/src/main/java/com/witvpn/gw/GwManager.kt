@@ -57,6 +57,15 @@ object GwManager {
 
     var selectedServer: GwServerConfig? = null
 
+    /**
+     * Конфиг, под который идёт или уже поднята текущая сессия. Ставится
+     * сервисом в момент старта и не меняется UI'ом. Сверка «пользователь
+     * выбрал другой сервер?» выполняется именно с ним: [selectedServer] —
+     * черновик UI, он перезаписывается выбранным узлом ещё до сверки, и
+     * проверка по нему всегда говорила «не изменился».
+     */
+    @Volatile var activeServer: GwServerConfig? = null
+
     /** Вызывается после каждого успешного установления туннеля,
      * включая рестарт сервиса системой (START_STICKY). */
     var onTunnelConnected: ((GwServerConfig) -> Unit)? = null
@@ -96,7 +105,7 @@ object GwManager {
     internal fun setState(newState: State, error: String? = null) {
         if (error != null) lastError = error
         if (state == newState) {
-            listeners.forEach { it.onStateChange(state) }
+            notifyState(newState)
             return
         }
         state = newState
@@ -106,7 +115,19 @@ object GwManager {
             resetTraffic()
             clearLastErrorInternal()
         }
-        synchronized(listeners) { listeners.toList() }.forEach { it.onStateChange(state) }
+        notifyState(state)
+    }
+
+    /**
+     * Дубли состояния — рутина (DISCONNECTED приходит и из отменённого
+     * воркера, и из stop-потока), а register/unregister крутятся на main
+     * thread. «Сырой» forEach здесь ловил ConcurrentModificationException,
+     * а необработанное исключение в сервисном потоке убивало процесс.
+     */
+    private fun notifyState(state: State) {
+        synchronized(listeners) { listeners.toList() }.forEach {
+            runCatching { it.onStateChange(state) }
+        }
     }
 
     private fun clearLastErrorInternal() {
@@ -116,7 +137,9 @@ object GwManager {
     internal fun updateTraffic(up: Long, down: Long) {
         txTotal = up
         rxTotal = down
-        synchronized(listeners) { listeners.toList() }.forEach { it.onTrafficUpdate(down, up) }
+        synchronized(listeners) { listeners.toList() }.forEach {
+            runCatching { it.onTrafficUpdate(down, up) }
+        }
     }
 
     fun resetTraffic() {
@@ -256,10 +279,24 @@ object GwManager {
     }
 
     fun stopVpn(context: Context) {
+        // Прямой вызов работает и из фона: startService(ACTION_STOP) при
+        // свёрнутом приложении кидает IllegalStateException, а таймаут-раннейблы
+        // срабатывают как раз когда приложение свёрнуто. Fallback на интент
+        // нужен, когда сервиса в процессе уже нет (сбросить KEY_RUNNING,
+        // иначе рестарт системы поднимет туннель заново).
+        val service = com.witvpn.gw.GwVpnService.instance
+        if (service != null) {
+            service.stopEverything()
+            return
+        }
         val intent = Intent(context, com.witvpn.gw.GwVpnService::class.java).apply {
             action = com.witvpn.gw.GwVpnService.ACTION_STOP
         }
-        context.startService(intent)
+        try {
+            context.startService(intent)
+        } catch (_: Exception) {
+            clearRunning(context)
+        }
     }
 
     fun configFromIntentExtra(json: String): GwServerConfig? =
