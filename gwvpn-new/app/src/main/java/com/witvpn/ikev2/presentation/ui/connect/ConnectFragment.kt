@@ -139,8 +139,12 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             } ?: run {
                  // Fallback if no profile is available but state is CONNECTING
                  // We can't easily disconnect without profile ID, but we can try to force UI reset
-                 binding.tvState.text = getString(R.string.connect)
-                 changeButtonColor(false)
+                 try {
+                     binding.tvState.text = getString(R.string.connect)
+                     changeButtonColor(false)
+                 } catch (_: Exception) {
+                     // View могла быть разрушена при живом фрагменте
+                 }
                  showProgress(false)
             }
             Toast.makeText(context, "Connection timed out", Toast.LENGTH_SHORT).show()
@@ -199,16 +203,22 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         override fun onStateChange(state: Tunnel.State) {
             activity?.runOnUiThread {
                 if (!isAdded) return@runOnUiThread
-                when (state) {
-                    Tunnel.State.UP -> {
-                        showProgress(false)
-                        updateVlessState(true) // Re-using state UI for simplicity
+                try {
+                    when (state) {
+                        Tunnel.State.UP -> {
+                            showProgress(false)
+                            updateVlessState(true) // Re-using state UI for simplicity
+                        }
+                        Tunnel.State.DOWN -> {
+                            showProgress(false)
+                            updateVlessState(false)
+                        }
+                        else -> {}
                     }
-                    Tunnel.State.DOWN -> {
-                        showProgress(false)
-                        updateVlessState(false)
-                    }
-                    else -> {}
+                } catch (_: Exception) {
+                    // View могла быть уже разрушена (AutoClearedValue бросает
+                    // IllegalStateException даже при живом фрагменте), а тут
+                    // main thread — падение убивает процесс.
                 }
             }
         }
@@ -216,8 +226,13 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         override fun onTrafficUpdate(rx: Long, tx: Long) {
             activity?.runOnUiThread {
                 if (!isAdded) return@runOnUiThread
-                binding.tvUpload.text = formatTraffic(tx)
-                binding.tvDownload.text = formatTraffic(rx)
+                try {
+                    binding.tvUpload.text = formatTraffic(tx)
+                    binding.tvDownload.text = formatTraffic(rx)
+                } catch (_: Exception) {
+                    // См. onStateChange: stats-таймер стучит каждую секунду,
+                    // в том числе пока view фрагмента разрушен навигацией.
+                }
             }
         }
     }
@@ -226,33 +241,38 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         override fun onStateChange(state: GwManager.State) {
             activity?.runOnUiThread {
                 if (!isAdded) return@runOnUiThread
-                when (state) {
-                    GwManager.State.CONNECTING -> {
-                        showProgress(true)
-                        binding.tvState.text = getString(R.string.connecting, "...")
-                        changeButtonColor(false)
-                    }
-                    GwManager.State.CONNECTED -> {
-                        handler.removeCallbacks(gwConnectionTimeoutRunnable)
-                        showProgress(false)
-                        updateVlessState(true)
-                    }
-                    GwManager.State.DISCONNECTED -> {
-                        handler.removeCallbacks(gwConnectionTimeoutRunnable)
-                        showProgress(false)
-                        updateVlessState(false)
-                        // Сообщаем бэкенду об отключении и при штатном стопе, и при
-                        // обрыве туннеля (ошибка/сбой) — иначе онлайн-счётчик «зависает».
-                        val ctx = context
-                        val userId = shareViewModel.userLiveData.value?.id ?: ""
-                        if (ctx != null && userId.isNotEmpty()) {
-                            ConnectionTracker.reportDisconnect(ctx, userId)
+                try {
+                    when (state) {
+                        GwManager.State.CONNECTING -> {
+                            showProgress(true)
+                            binding.tvState.text = getString(R.string.connecting, "...")
+                            changeButtonColor(false)
                         }
-                        if (isGwMode && !GwManager.lastError.isNullOrBlank()) {
-                            Toast.makeText(context, GwManager.lastError, Toast.LENGTH_LONG).show()
+                        GwManager.State.CONNECTED -> {
+                            handler.removeCallbacks(gwConnectionTimeoutRunnable)
+                            showProgress(false)
+                            updateVlessState(true)
                         }
+                        GwManager.State.DISCONNECTED -> {
+                            handler.removeCallbacks(gwConnectionTimeoutRunnable)
+                            showProgress(false)
+                            updateVlessState(false)
+                            // Сообщаем бэкенду об отключении и при штатном стопе, и при
+                            // обрыве туннеля (ошибка/сбой) — иначе онлайн-счётчик «зависает».
+                            val ctx = context
+                            val userId = shareViewModel.userLiveData.value?.id ?: ""
+                            if (ctx != null && userId.isNotEmpty()) {
+                                ConnectionTracker.reportDisconnect(ctx, userId)
+                            }
+                            if (isGwMode && !GwManager.lastError.isNullOrBlank()) {
+                                Toast.makeText(context, GwManager.lastError, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                        else -> {}
                     }
-                    else -> {}
+                } catch (_: Exception) {
+                    // См. awgListener.onStateChange: view может быть разрушен
+                    // при живом фрагменте — падать здесь нельзя.
                 }
             }
         }
@@ -260,8 +280,12 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         override fun onTrafficUpdate(rx: Long, tx: Long) {
             activity?.runOnUiThread {
                 if (!isAdded) return@runOnUiThread
-                binding.tvUpload.text = formatTraffic(tx)
-                binding.tvDownload.text = formatTraffic(rx)
+                try {
+                    binding.tvUpload.text = formatTraffic(tx)
+                    binding.tvDownload.text = formatTraffic(rx)
+                } catch (_: Exception) {
+                    // См. awgListener.onTrafficUpdate.
+                }
             }
         }
 
@@ -269,13 +293,21 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             activity?.runOnUiThread {
                 if (!isAdded) return@runOnUiThread
                 if (!isGwMode) return@runOnUiThread
-                if (active) {
-                    // Туннель НЕ разорван: показываем восстановление связи, но
-                    // кнопку не превращаем в «подключить» — пользователь в любой
-                    // момент должен иметь возможность отключить VPN.
-                    binding.tvState.text = getString(R.string.connecting, "...")
-                } else if (GwManager.isConnected()) {
-                    updateVlessState(true)
+                try {
+                    if (active) {
+                        // Туннель НЕ разорван: показываем восстановление связи, но
+                        // кнопку не превращаем в «подключить» — пользователь в любой
+                        // момент должен иметь возможность отключить VPN.
+                        binding.tvState.text = getString(R.string.connecting, "...")
+                    } else if (GwManager.isConnected()) {
+                        updateVlessState(true)
+                    } else {
+                        // Туннель уже не жив — не оставляем висеть «Подключение...»,
+                        // DISCONNECTED придёт следом или пришёл раньше.
+                        updateVlessState(false)
+                    }
+                } catch (_: Exception) {
+                    // View может быть разрушен — см. выше.
                 }
             }
         }
@@ -399,6 +431,14 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             if (!isVlessMode && !isAwgMode && !isGwMode) {
                 setProtocol("VLESS")
             }
+            // Не только спиннер: подтягиваем фон и подпись целиком. Иначе после
+            // пересоздания view во время подключения оставалась синяя кнопка
+            // из прошлого состояния — без текста (connect_info скрыт спиннером).
+            try {
+                binding.tvState.text = getString(R.string.connecting, "...")
+                changeButtonColor(false)
+            } catch (_: Exception) {
+            }
             showProgress(true)
         } else if (AmneziaWGManager.isConnected()) {
             if (!isAwgMode) {
@@ -415,6 +455,15 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         } else if (GwManager.state == GwManager.State.CONNECTING) {
             if (!isGwMode) {
                 setProtocol("GW")
+            }
+            // Полный рендер «подключения», а не только спиннер: после пересоздания
+            // view setProtocol успевал покрасить кнопку в синий (CONNECTING считался
+            // «активным»), а showProgress(true) прятал надпись — получалась синяя
+            // кнопка вообще без текста.
+            try {
+                binding.tvState.text = getString(R.string.connecting, "...")
+                changeButtonColor(false)
+            } catch (_: Exception) {
             }
             showProgress(true)
         } else {
@@ -1078,19 +1127,33 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             }
         }
 
-        // Only reset state UI if not currently connected/connecting to the selected protocol
-        val vlessActive = isVlessMode && (VyomVpnManager.currentState == VyomState.CONNECTED || VyomVpnManager.currentState == VyomState.CONNECTING)
-        val awgActive = isAwgMode && AmneziaWGManager.isConnected()
-        val gwActive = isGwMode && (GwManager.isConnected() || GwManager.state == GwManager.State.CONNECTING)
-        val ikeActive = !isVlessMode && !isAwgMode && !isGwMode &&
-                (viewModel.stateLiveData.value == VpnStateService.State.CONNECTED || viewModel.stateLiveData.value == VpnStateService.State.CONNECTING)
-        if (!vlessActive && !awgActive && !gwActive && !ikeActive) {
-            binding.tvState.text = getString(R.string.connect)
-            changeButtonColor(false)
-            showProgress(false)
-        } else {
-            updateVlessState(true)
-            showProgress(false)
+        // Синим кнопка становится только при реальном CONNECTED. CONNECTING
+        // рендерится отдельно — тёмный фон, спиннер, подпись «Подключение...»:
+        // раньше CONNECTING считался «активным», кнопка красилась в синий, а
+        // onResume прятал надпись — получалась синяя кнопка без текста.
+        val vlessConnected = isVlessMode && VyomVpnManager.currentState == VyomState.CONNECTED
+        val vlessConnecting = isVlessMode && VyomVpnManager.currentState == VyomState.CONNECTING
+        val awgConnected = isAwgMode && AmneziaWGManager.isConnected()
+        val gwConnected = isGwMode && GwManager.isConnected()
+        val gwConnecting = isGwMode && GwManager.state == GwManager.State.CONNECTING
+        val ikeState = viewModel.stateLiveData.value
+        val ikeConnected = !isVlessMode && !isAwgMode && !isGwMode && ikeState == VpnStateService.State.CONNECTED
+        val ikeConnecting = !isVlessMode && !isAwgMode && !isGwMode && ikeState == VpnStateService.State.CONNECTING
+        when {
+            vlessConnected || awgConnected || gwConnected || ikeConnected -> {
+                updateVlessState(true)
+                showProgress(false)
+            }
+            vlessConnecting || gwConnecting || ikeConnecting -> {
+                binding.tvState.text = getString(R.string.connecting, "...")
+                changeButtonColor(false)
+                showProgress(true)
+            }
+            else -> {
+                binding.tvState.text = getString(R.string.connect)
+                changeButtonColor(false)
+                showProgress(false)
+            }
         }
     }
 
@@ -1215,10 +1278,20 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
      * подписчику (например, при пересоздании фрагмента).
      */
     private fun reconnectGwIfServerChanged(savedServer: Server) {
-        val current = GwManager.selectedServer
+        // Сверяем с activeServer — конфигом, под которым реально идёт/поднята
+        // сессия. Сверка с selectedServer не работала: updateGwServerUI()
+        // (вызывается из initView → setProtocol при пересоздании view и из
+        // observers) перезаписывает selectedServer выбранным узлом ещё ДО этой
+        // проверки, и она всегда говорила «не изменился» — переключение сервера
+        // при активном туннеле не срабатывало никогда. activeServer ставит
+        // только сервис, поэтому LiveData-replay при пересоздании фрагмента
+        // по-прежнему не вызывает ложных переподключений.
+        val selectedGw = viewModel2.serversGwList.value?.find {
+            "gw_${it.id}" == savedServer.id || it.ipAddress == savedServer.ipAddress
+        }
+        val targetConfig = selectedGw?.config
         val active = GwManager.isConnected() || GwManager.state == GwManager.State.CONNECTING
-        val changed = current == null || current.ipAddress != savedServer.ipAddress
-        if (active && changed) {
+        if (active && targetConfig != null && GwManager.activeServer != targetConfig) {
             onServerSelectedFromList(savedServer)
         } else {
             updateGwServerUI()
@@ -1262,7 +1335,17 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         return gwServers.find { it.ipAddress == draft?.ipAddress }
     }
 
+    /** Момент последнего тапа по GW-кнопке (SystemClock.elapsedRealtime). */
+    private var lastGwClickAt = 0L
+
     private fun handleGwConnectClick() {
+        // Троттлинг: двойной тап успевал уйти в сервис до того, как тот
+        // выставлял CONNECTING, — второй ACTION_START плодил второго воркера
+        // (двойной establish()/TProxyStartService) и ронял приложение.
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastGwClickAt < 1000) return
+        lastGwClickAt = now
+
         if (GwManager.isConnected()) {
             val ctx = context ?: return
             GwManager.stopVpn(ctx)
