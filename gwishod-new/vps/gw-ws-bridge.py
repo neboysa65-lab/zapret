@@ -11,18 +11,25 @@ import asyncio
 import base64
 import hashlib
 import os
+import socket
 import ssl
 import sys
+import time
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SSH_HOST = os.environ.get("GW_SSH_HOST", "127.0.0.1")
 SSH_PORT = int(os.environ.get("GW_SSH_PORT", "22"))
 DEFAULT_KEY = "dGhlIHNhbXBsZSBub25jZQ=="
 STATS_TOKEN = os.environ.get("GW_STATS_TOKEN", "")
-_STARTED_AT = __import__("time").time()
+_STARTED_AT = time.time()
 
 MAX_HEAD = 65536
 HEAD_TIMEOUT = 30
+# Лимит ТИШИНЫ, а не лимит жизни: туннель рвём только если в обе стороны
+# не летело ни байта IDLE_TIMEOUT секунд. Живой клиент шлёт SSH-keepalive
+# каждые 20 секунд, поэтому для него этот лимит недостижим. Раньше это был
+# жёсткий таймер жизни (asyncio.wait(timeout=7200)): каждые ровно 2 часа
+# мост обрубал полностью здоровый туннель, и клиент видел «реконнект».
 IDLE_TIMEOUT = 7200
 
 active_tunnels = 0
@@ -53,13 +60,35 @@ def _parse_head(head: bytes):
     return (method, path, version), headers
 
 
-async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, count_tx: bool):
+def _enable_keepalive(writer: asyncio.StreamWriter):
+    """Включает TCP keepalive на сокете с короткими таймингами.
+
+    Без этого пропавший без «прощания» клиент (лифт, отлетевший Wi-Fi)
+    держит полуоткрытую сессию часами: sshd и мост ждут данных, которые
+    никогда не придут, а active_tunnels в /gw-stats завышен.
+    60+20*5 ≈ 2.5 минуты до детекта мёртвого пира ядром.
+    """
+    sock = writer.get_extra_info("socket")
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 20)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
+    except OSError:
+        pass
+
+
+async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, count_tx: bool,
+                last_active):
     global bytes_tx, bytes_rx
     try:
         while True:
             data = await src.read(65536)
             if not data:
                 break
+            last_active[0] = time.monotonic()
             if count_tx:
                 bytes_tx += len(data)
             else:
@@ -147,16 +176,36 @@ async def _handle(client_reader: asyncio.StreamReader, client_writer: asyncio.St
         if rest:
             ssh_writer.write(rest)
             await ssh_writer.drain()
+        _enable_keepalive(client_writer)
+        _enable_keepalive(ssh_writer)
 
         active_tunnels += 1
         try:
-            t_c2s = asyncio.ensure_future(_pipe(client_reader, ssh_writer, True))
-            t_s2c = asyncio.ensure_future(_pipe(ssh_reader, client_writer, False))
-            done, pending = await asyncio.wait(
-                {t_c2s, t_s2c}, return_when=asyncio.FIRST_COMPLETED, timeout=IDLE_TIMEOUT
-            )
-            for t in pending:
-                t.cancel()
+            # Штамп последней активности один на туннель: обновляется обеими
+            # «трубами» на каждом куске данных, сторож ниже читает его.
+            last_active = [time.monotonic()]
+            t_c2s = asyncio.ensure_future(
+                _pipe(client_reader, ssh_writer, True, last_active))
+            t_s2c = asyncio.ensure_future(
+                _pipe(ssh_reader, client_writer, False, last_active))
+            # Сторож тишины: если кончилась одна труба — туннель закрылся сам
+            # (EOF/ошибка). Если истёк IDLE_TIMEOUT тишины — клиент пропал,
+            # прибираем. Если же трафик шёл — просто продолжаем сторожить:
+            # ЗДОРОВЫЙ туннель живёт сколько угодно, никакого 2-часового капа.
+            while True:
+                remaining = IDLE_TIMEOUT - (time.monotonic() - last_active[0])
+                done, pending = await asyncio.wait(
+                    {t_c2s, t_s2c}, return_when=asyncio.FIRST_COMPLETED,
+                    timeout=max(remaining, 0.1),
+                )
+                if done:
+                    for t in pending:
+                        t.cancel()
+                    break
+                if time.monotonic() - last_active[0] >= IDLE_TIMEOUT:
+                    for t in pending:
+                        t.cancel()
+                    break
         finally:
             active_tunnels -= 1
     except (ConnectionError, OSError):
