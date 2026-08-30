@@ -34,25 +34,25 @@ android {
         applicationId "app.greywebs.vpn"
         minSdk 24
         targetSdk 35
-        versionCode 278
-        versionName "3.0.8"
+        versionCode 282
+        versionName "3.1.1"
 
         archivesBaseName = "GreyWebVPN-$versionName [$versionCode]"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        resValue("string", "base_url", "https://api-gwvpn-app.vpnhub.xyz/vpn/api/v1/")
+        resValue("string", "base_url", "https://gwapi.vpnhub.xyz/vpn/api/v1/")
 
         // Ссылка-подписка (subscription) со списком vless/hysteria2 нод.
         // Как и base_url — это лишь ДЕФОЛТ; актуальное значение приходит из
         // Firebase Remote Config (ключ subscription_url) и может быть заменено
         // из консоли Firebase без выпуска обновления в Google Play.
-        resValue("string", "subscription_url", "https://sub.gw-vpn.click/jzp2_Fc1rqXDrBu1")
+        resValue("string", "subscription_url", "https://subs.gw-vpn.click/jzp2_Fc1rqXDrBu1")
 
         // CAS.AI application identifier from the CAS dashboard.
         buildConfigField("String", "CAS_ID", '"app.greywebs.vpn"')
 
-        buildConfigField("String", "GRAYS_BILLING_URL", '"https://api-gwvpn-app.vpnhub.xyz/vpn/client/payment/new?userId=%s"')
+        buildConfigField("String", "GRAYS_BILLING_URL", '"https://gwapi.vpnhub.xyz/vpn/client/payment/new?userId=%s"')
         buildConfigField("boolean", "CHECK_IN_APP_UPDATES", "true")
 
         ndk {

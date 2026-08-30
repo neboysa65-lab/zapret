@@ -7,6 +7,7 @@ import android.view.View
 import androidx.fragment.app.activityViewModels
 import androidx.fragment.app.viewModels
 import androidx.navigation.fragment.findNavController
+import com.witvpn.ikev2.BuildConfig
 import com.witvpn.ikev2.R
 import com.witvpn.ikev2.databinding.FragmentOtpBinding
 import com.witvpn.ikev2.databinding.FragmentSettingsBinding
@@ -29,6 +30,9 @@ class OTPFragment : BaseFragment<FragmentSettingsBinding>(R.layout.fragment_sett
     }
 
     override fun initView() {
+        // Версия берётся из сборки, а не из захардкоженной строки: надпись
+        // больше не будет отставать от versionName в build.gradle.
+        binding.tvAppVersion.text = getString(R.string.app_version, BuildConfig.VERSION_NAME)
 //        binding.close.setOnClickListener {
 //            findNavController().popBackStack()
 //        }

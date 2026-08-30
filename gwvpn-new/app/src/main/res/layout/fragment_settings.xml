@@ -462,11 +462,11 @@
             android:layout_weight="1" />
 
         <TextView
+            android:id="@+id/tvAppVersion"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:layout_marginBottom="24dp"
-            android:text="@string/app_version"
             android:textColor="#8C9197" />
 
     </LinearLayout>
