@@ -30,3 +30,4 @@ plugins {
 
 include(":app")
 include(":hysteria2_engine")
+include(":vlee_engine")

@@ -4,6 +4,7 @@ import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:flutter_v2ray_plus/url/url.dart';
 import '../models/vless_config_model.dart';
 import 'hysteria_engine_service.dart';
+import 'vlee_engine_service.dart';
 import 'vless_link_config_builder.dart';
 import 'xray_config_normalizer.dart';
 
@@ -11,16 +12,18 @@ import 'xray_config_normalizer.dart';
 enum VpnStatus { disconnected, connecting, connected, disconnecting, error }
 
 /// Which engine currently owns the tunnel.
-enum ActiveEngine { none, v2ray, hysteria2 }
+enum ActiveEngine { none, v2ray, hysteria2, vlee }
 
 /// Service for VPN connection management.
 ///
 /// VLESS / Shadowsocks / raw JSON configs go through flutter_v2ray_plus
 /// (unchanged). Hysteria2 servers are routed to the dedicated native engine
-/// (see HysteriaEngineService), ported from the gwapk project.
+/// (see HysteriaEngineService), ported from the gwapk project. VLEE servers
+/// go to the VLEE engine (see VleeEngineService), ported from gwvpn-new.
 class VpnService {
   late FlutterV2ray _flutterV2ray;
   final HysteriaEngineService _hysteriaEngine = HysteriaEngineService();
+  final VleeEngineService _vleeEngine = VleeEngineService();
   ActiveEngine _activeEngine = ActiveEngine.none;
   VpnStatus _status = VpnStatus.disconnected;
   VlessConfig? _currentConfig;
@@ -30,6 +33,10 @@ class VpnService {
   StreamSubscription<HysteriaTraffic>? _hysteriaTrafficSubscription;
   HysteriaTraffic? _lastHysteriaTraffic;
   DateTime? _lastHysteriaTrafficAt;
+  StreamSubscription<VleeState>? _vleeStatusSubscription;
+  StreamSubscription<VleeTraffic>? _vleeTrafficSubscription;
+  VleeTraffic? _lastVleeTraffic;
+  DateTime? _lastVleeTrafficAt;
 
   // Stream controller to broadcast status changes
   final _statusController = StreamController<VpnStatus>.broadcast();
@@ -60,8 +67,11 @@ class VpnService {
 
       // Listen to the status stream from flutter_v2ray_plus
       _statusSubscription = _flutterV2ray.onStatusChanged.listen((vlessStatus) {
-        // Ignore v2ray engine chatter while the Hysteria2 engine owns the tunnel.
-        if (_activeEngine == ActiveEngine.hysteria2) return;
+        // Ignore v2ray engine chatter while a dedicated engine owns the tunnel.
+        if (_activeEngine == ActiveEngine.hysteria2 ||
+            _activeEngine == ActiveEngine.vlee) {
+          return;
+        }
         _handleStatusChange(vlessStatus);
       });
 
@@ -71,6 +81,12 @@ class VpnService {
           _hysteriaEngine.statusStream.listen(_handleHysteriaStateChange);
       _hysteriaTrafficSubscription =
           _hysteriaEngine.trafficStream.listen(_handleHysteriaTraffic);
+
+      // VLEE engine: state / traffic streams (init не нужен).
+      _vleeStatusSubscription =
+          _vleeEngine.statusStream.listen(_handleVleeStateChange);
+      _vleeTrafficSubscription =
+          _vleeEngine.trafficStream.listen(_handleVleeTraffic);
 
       return true;
     } catch (e) {
@@ -114,6 +130,29 @@ class VpnService {
           return false;
         }
         // Final CONNECTED/ERROR arrives via the engine status stream.
+        return true;
+      }
+
+      // --- VLEE: SSH-туннель, отдельный движок (порт gw-tunnel). ---
+      // Нативная сторона сама запрашивает VpnService.prepare() и стартует
+      // туннель после grant'а; прогресс приходит через statusStream.
+      if (config.isVlee) {
+        _activeEngine = ActiveEngine.vlee;
+        final json = config.hasJsonConfig
+            ? config.rawJsonConfig!
+            : throw Exception('VLEE config missing raw JSON');
+
+        final started = await _vleeEngine.connect(
+          json,
+          excludedApps: blockedApps ?? const [],
+        );
+        if (!started) {
+          _errorMessage = 'Не удалось запустить VLEE движок.';
+          _activeEngine = ActiveEngine.none;
+          _updateStatus(VpnStatus.disconnected);
+          return false;
+        }
+        // Final CONNECTED arrives via the engine status stream.
         return true;
       }
 
@@ -214,6 +253,8 @@ class VpnService {
       _updateStatus(VpnStatus.disconnecting);
       if (_activeEngine == ActiveEngine.hysteria2) {
         await _hysteriaEngine.disconnect();
+      } else if (_activeEngine == ActiveEngine.vlee) {
+        await _vleeEngine.disconnect();
       } else {
         await _flutterV2ray.stopVless();
       }
@@ -252,10 +293,10 @@ class VpnService {
   /// Measure server ping/delay
   Future<int?> pingServer(VlessConfig config) async {
     try {
-      // Hysteria2 servers are not measurable through flutter_v2ray_plus
-      // (QUIC/UDP-based). The server list already measures them with a raw
-      // TCP socket in AppProvider.loadServers().
-      if (config.isHysteria2) return null;
+      // Hysteria2/VLEE servers are not measurable through flutter_v2ray_plus.
+      // The server list already measures them with a raw TCP socket in
+      // AppProvider.loadServers().
+      if (config.isHysteria2 || config.isVlee) return null;
 
       // If connected to this server, get connected delay
       if (_status == VpnStatus.connected && _currentConfig?.id == config.id) {
@@ -351,6 +392,64 @@ class VpnService {
     ));
   }
 
+  /// Handle state changes from the VLEE engine.
+  void _handleVleeStateChange(VleeState state) {
+    if (_activeEngine != ActiveEngine.vlee) return;
+
+    switch (state) {
+      case VleeState.connecting:
+        _updateStatus(VpnStatus.connecting);
+        break;
+      case VleeState.connected:
+        _updateStatus(VpnStatus.connected);
+        break;
+      case VleeState.disconnecting:
+        _updateStatus(VpnStatus.disconnecting);
+        break;
+      case VleeState.disconnected:
+        _activeEngine = ActiveEngine.none;
+        _lastVleeTraffic = null;
+        _lastVleeTrafficAt = null;
+        _updateStatus(VpnStatus.disconnected);
+        break;
+      case VleeState.idle:
+        break;
+    }
+  }
+
+  /// Convert VLEE cumulative traffic totals into the same VlessStatus
+  /// events the UI already consumes for speed display.
+  void _handleVleeTraffic(VleeTraffic traffic) {
+    if (_activeEngine != ActiveEngine.vlee) return;
+
+    final now = DateTime.now();
+    int upSpeed = 0;
+    int downSpeed = 0;
+    final last = _lastVleeTraffic;
+    final lastAt = _lastVleeTrafficAt;
+    if (last != null && lastAt != null) {
+      final seconds = now.difference(lastAt).inMilliseconds / 1000.0;
+      if (seconds > 0) {
+        upSpeed = ((traffic.uploadTotal - last.uploadTotal) / seconds)
+            .clamp(0, double.maxFinite)
+            .round();
+        downSpeed = ((traffic.downloadTotal - last.downloadTotal) / seconds)
+            .clamp(0, double.maxFinite)
+            .round();
+      }
+    }
+    _lastVleeTraffic = traffic;
+    _lastVleeTrafficAt = now;
+
+    _vlessStatusController.add(VlessStatus(
+      state: 'CONNECTED',
+      uploadSpeed: upSpeed,
+      downloadSpeed: downSpeed,
+      upload: traffic.uploadTotal,
+      download: traffic.downloadTotal,
+    ));
+  }
+
   /// Handle status changes from flutter_v2ray_plus
   void _handleStatusChange(VlessStatus vlessStatus) {
     // Broadcast full status for speed/traffic updates
@@ -385,6 +484,8 @@ class VpnService {
     _statusSubscription?.cancel();
     _hysteriaStatusSubscription?.cancel();
     _hysteriaTrafficSubscription?.cancel();
+    _vleeStatusSubscription?.cancel();
+    _vleeTrafficSubscription?.cancel();
     _statusController.close();
     _vlessStatusController.close();
   }

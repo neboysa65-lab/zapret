@@ -19,7 +19,7 @@ class VlessConfig {
   final String? rawJsonConfig;
 
   // VLESS specific fields
-  final String protocol; // 'vless', 'ss', 'hysteria2'
+  final String protocol; // 'vless', 'ss', 'hysteria2', 'vlee'
   final String security; // 'reality', 'tls', etc.
   final String type; // 'tcp', 'grpc', etc.
   final String flow; // 'xtls-rprx-vision'
@@ -39,6 +39,10 @@ class VlessConfig {
 
   /// True when this server must be handled by the dedicated Hysteria2 engine.
   bool get isHysteria2 => protocol == 'hysteria2';
+
+  /// True when this server must be handled by the VLEE engine
+  /// (SSH-tunnel protocol, ported from the GW VPN app).
+  bool get isVlee => protocol == 'vlee';
 
   /// Canonical `hysteria2://` URI reconstructed from the model fields.
   ///
@@ -151,6 +155,90 @@ class VlessConfig {
       obfsPassword: obfsPassword,
       allowInsecure: allowInsecure,
     );
+  }
+
+  /// Build VlessConfig from a decrypted VLEE server envelope.
+  ///
+  /// [config] — plaintext конверта: компактные ключи k0..ka (или legacy-имена,
+  /// обе схемы понимает и сервер, и нативный движок). Схема полей 1:1 с GW:
+  ///   k0 id, k1 ip_address, k2 ssh_port, k3 ssh_username, k4 ssh_password,
+  ///   k5 proxy_host, k6 proxy_port, k7 proxy_scheme, k8 payload, k9 sni,
+  ///   ka ssh_hostkey.
+  ///
+  /// [address]/[port] для отображения и TCP-пинга — это эндпоинт, к которому
+  /// клиент реально подключается: прокси/CDN-фронт, если задан, иначе SSH-нода.
+  factory VlessConfig.fromVlee({
+    required Map<String, dynamic> meta,
+    required Map<String, dynamic> config,
+  }) {
+    String pick(String compact, String legacy, [String fallback = '']) =>
+        config.containsKey(compact)
+            ? config[compact]?.toString() ?? fallback
+            : (config[legacy]?.toString() ?? fallback);
+
+    int pickInt(String compact, String legacy, int fallback) {
+      final raw = config.containsKey(compact)
+          ? config[compact]
+          : config[legacy];
+      return (raw is num) ? raw.toInt() : int.tryParse('$raw') ?? fallback;
+    }
+
+    final nodeId = pick('k0', 'id');
+    final ipAddress = pick('k1', 'ip_address');
+    final sshPort = pickInt('k2', 'ssh_port', 22);
+    final proxyHost = pick('k5', 'proxy_host');
+    final proxyPort = pickInt('k6', 'proxy_port', 80);
+    final sni = pick('k9', 'sni');
+    final viaProxy = proxyHost.isNotEmpty;
+    final address = viaProxy ? proxyHost : ipAddress;
+    final port = viaProxy ? proxyPort : sshPort;
+
+    final country = (meta['country'] as String?) ?? '';
+    final state = (meta['state'] as String?) ?? '';
+    final countryCode = (meta['country_code'] as String?) ?? '';
+    final nodeName = (meta['name'] as String?) ?? '';
+
+    String display = country.isNotEmpty && country != '0'
+        ? country
+        : (nodeName.isNotEmpty ? nodeName : ipAddress);
+    if (state.isNotEmpty && state != '0') display = '$display · $state';
+
+    return VlessConfig(
+      id: canonicalId(
+        protocol: 'vlee',
+        address: ipAddress,
+        port: sshPort,
+        uuid: nodeId,
+      ),
+      serverName: display,
+      address: address,
+      port: port,
+      uuid: '',
+      originalUrl: '',
+      // rawJsonConfig держит plaintext конверт (k0..ka) — нативный движок
+      // принимает его как есть (VleeServerConfig.fromJson понимает обе схемы).
+      rawJsonConfig: jsonEncode(config),
+      country: country.isNotEmpty && country != '0' ? country : 'Unknown',
+      flag: _flagFromCountryCode(countryCode),
+      protocol: 'vlee',
+      security: 'ssh',
+      type: 'vlee',
+      sni: sni,
+    );
+  }
+
+  /// Код страны -> флажок-эмодзи (regional indicator symbols).
+  /// Особые имена (northern_cyprus, flag_usa, ...) и мусор -> белый флаг.
+  static String _flagFromCountryCode(String code) {
+    final cc = code.trim().toLowerCase();
+    if (cc.length != 2 ||
+        cc == '0' ||
+        !RegExp(r'^[a-z]{2}$').hasMatch(cc)) {
+      return '🏳️';
+    }
+    final base = 0x1F1E6;
+    return String.fromCharCode(base + cc.codeUnitAt(0) - 97) +
+        String.fromCharCode(base + cc.codeUnitAt(1) - 97);
   }
 
   /// Build VlessConfig from full Xray JSON config (with optional balancer).

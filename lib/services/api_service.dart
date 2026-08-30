@@ -3,14 +3,29 @@ import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../models/vless_config_model.dart';
 import '../services/auth_service.dart';
+import 'vlee_api_service.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
   static const String _cacheKey = 'vless_configs_cache';
+  final VleeApiService _vleeApi = VleeApiService();
 
   /// Fetch VLESS configs from our backend (backend proxies subscription, avoids device limit)
+  ///
+  /// VLEE-ноды приходят отдельным зашифрованным конвертом
+  /// (`POST /api/v1/user/server_vlee`) и вливаются в общий список здесь:
+  /// протокол определяется полем конфига, как для hysteria2.
   Future<List<VlessConfig>> fetchVlessConfigs() async {
+    List<VlessConfig> vleeConfigs = [];
+    try {
+      // VLEE грузится независимо от подписок: недоступность VLEE (нет нод,
+      // юзер не найден, сеть) не должна ломать основной список.
+      vleeConfigs = await _vleeApi.fetchVleeConfigs();
+    } catch (e) {
+      print('🌐 VLEE configs unavailable: $e');
+    }
+
     try {
       final seedHash = await AuthService.loadSeedHash();
       if (seedHash == null) throw Exception('Not authenticated');
@@ -33,11 +48,13 @@ class ApiService {
 
       final List<String> stringLines =
           lines.whereType<String>().toList(growable: false);
-      final allConfigs = _parseConfigs(stringLines);
+      final allConfigs = [...vleeConfigs, ..._parseConfigs(stringLines)];
 
       if (allConfigs.isNotEmpty) {
         // Cache both raw URLs and JSON configs as one entry per line.
-        final cacheLines = allConfigs.map((c) {
+        // VLEE-конфиги в общий кэш не пишутся (их plaintext содержит ssh-пароли
+        // и хранится отдельно в SecureStorage внутри VleeApiService).
+        final cacheLines = allConfigs.where((c) => !c.isVlee).map((c) {
           if (c.hasJsonConfig) return c.rawJsonConfig!;
           if (c.originalUrl.isNotEmpty) return c.originalUrl;
           // Hysteria2 extracted from backend JSON: cache as canonical URL.

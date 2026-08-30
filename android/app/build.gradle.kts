@@ -99,6 +99,17 @@ android {
             enableSplit = true  // Split по архитектурам, но с правильными native libs
         }
     }
+
+    // VLEE engine тянет sshj -> bcprov/bcpkix/bcutil: их дублирующиеся
+    // META-INF манифесты валят mergeReleaseJavaResource.
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/versions/9/OSGI-INF/*",
+            )
+        }
+    }
 }
 
 dependencies {
@@ -114,6 +125,10 @@ dependencies {
     // Separate Hysteria2 engine (ported from gwapk). VLESS keeps using
     // flutter_v2ray_plus; only Hysteria2 servers are routed through this module.
     implementation(project(":hysteria2_engine"))
+
+    // VLEE engine (SSH-tunnel protocol, 1:1 port of gwvpn-new/gw-tunnel).
+    // Its libhev-socks5-tunnel.so + TProxyService come from hysteria2_engine.
+    implementation(project(":vlee_engine"))
 }
 
 flutter {

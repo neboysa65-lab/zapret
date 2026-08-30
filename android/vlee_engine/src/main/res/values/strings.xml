@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="vlee_notif_title">Vlee VPN</string>
+    <string name="vlee_notif_channel">Vlee VPN Service</string>
+    <string name="vlee_notif_connected">VPN connected</string>
+    <string name="vlee_notif_reconnecting">Reconnecting…</string>
+</resources>

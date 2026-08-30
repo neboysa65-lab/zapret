@@ -87,3 +87,6 @@ KEYSTORE_INFO.txt
 **/macos/Flutter/GeneratedPluginRegistrant.swift
 **/windows/flutter/generated_plugin_registrant.cc
 **/windows/flutter/generated_plugins.cmake
+
+# ZCode agent workspace
+.zcode/
