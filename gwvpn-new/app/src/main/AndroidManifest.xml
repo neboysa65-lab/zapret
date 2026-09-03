@@ -25,7 +25,11 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/AppTheme.NoActionBar">
+        android:theme="@style/AppTheme.NoActionBar"
+        android:enableOnBackInvokedCallback="false">
+        <!-- targetSdk 36 включает predictive back по умолчанию; старые androidx
+             (activity 1.5.1 / navigation 2.5.3) не поддерживают OnBackInvokedCallback,
+             поэтому явно оставляем классическое поведение кнопки «назад». -->
         <activity
             android:name=".presentation.ui.MainActivity"
             android:screenOrientation="portrait"

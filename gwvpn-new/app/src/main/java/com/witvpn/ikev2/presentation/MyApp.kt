@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Process
 import com.android.billingclient.api.BillingClient
+import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.PurchasesUpdatedListener
 import com.google.android.gms.tasks.OnCompleteListener
 import com.google.firebase.messaging.FirebaseMessaging
@@ -119,9 +120,14 @@ class MyApp : Application() {
     private fun initGoogleBilling() {
         try {
             if (GooglePlayHelper.deviceHasGooglePlayServices(this)) {
+                // Billing 7.x: enablePendingPurchases() без параметров удалён —
+                // обязателен PendingPurchasesParams (включая покупки в ожидании).
+                val pendingParams = PendingPurchasesParams.newBuilder()
+                    .enableOneTimeProducts()
+                    .build()
                 BillingClient.newBuilder(this)
                     .setListener { _, purchases -> Timber.i(purchases.toString()) }
-                    .enablePendingPurchases()
+                    .enablePendingPurchases(pendingParams)
                     .build()
             } else {
                 Timber.w("Google Play Services not available, skipping Billing initialization")

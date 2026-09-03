@@ -27,14 +27,14 @@ cas {
 }
 
 android {
-    compileSdk 35
+    compileSdk 36
     ndkVersion "27.0.12077973"
 
     defaultConfig {
         applicationId "app.greywebs.vpn"
         minSdk 24
-        targetSdk 35
-        versionCode 282
+        targetSdk 36
+        versionCode 283
         versionName "3.1.1"
 
         archivesBaseName = "GreyWebVPN-$versionName [$versionCode]"
@@ -81,6 +81,11 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
                 'proguard-rules.pro',
                 'proguard-keep-others.pro'
+            // Символьные таблицы нативных .so кладутся в BUNDLE-METADATA AAB —
+            // иначе Play Console ругается «загрузите файл с отладочными символами».
+            ndk {
+                debugSymbolLevel 'SYMBOL_TABLE'
+            }
         }
         debug {
             buildConfigField("boolean", "CHECK_IN_APP_UPDATES", "false")
@@ -201,7 +206,8 @@ dependencies {
     // Ads — CAS.AI mediation. The SDK and network adapters are contributed by the
     // 'com.cleveradssolutions.gradle-plugin' plugin via the cas { } block above.
 
-    implementation 'com.android.billingclient:billing:6.2.0'
+    // Play Billing 7.x — требование Google Play (>= 7.0.0)
+    implementation 'com.android.billingclient:billing:7.1.1'
     implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
 
     // Vyom xray SDK (replaces old libv2ray.aar with 16KB page-aligned libraries)
