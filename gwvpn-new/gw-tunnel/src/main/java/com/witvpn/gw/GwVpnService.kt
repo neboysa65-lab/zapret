@@ -661,7 +661,15 @@ class GwVpnService : TProxyService() {
             tproxyStarted = false
             // Даём нативной стороне время дохлопнуть перед возможным
             // следующим TProxyStartService.
-            Thread.sleep(500)
+            // InterruptedException здесь фатален: teardown зовут и из
+            // catch-обработчика старта, и из onDestroy — вылет из sleep
+            // убивал процесс, когда STOP прерывал поток START
+            // (startThread.interrupt()) во время этой паузы.
+            try {
+                Thread.sleep(500)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
         }
         runCatching { socksServer?.stop() }
         runCatching { transport?.close() }

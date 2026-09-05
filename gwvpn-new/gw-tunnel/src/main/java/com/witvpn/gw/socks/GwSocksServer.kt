@@ -39,6 +39,12 @@ class GwSocksServer(
         private const val ATYP_IPV4 = 0x01
         private const val ATYP_DOMAIN = 0x03
         private const val ATYP_IPV6 = 0x04
+
+        /** Максимум одновременных UDP-сессий (каждая = поток + сокет + буфер). */
+        private const val MAX_UDP_SESSIONS = 200
+
+        /** UDP-сессия без трафика дольше этого закрывается, освобождая поток/сокет. */
+        private const val UDP_IDLE_TIMEOUT_MS = 60_000L
         private const val DNS_PORT = 53
         private const val DNS_TCP_TIMEOUT_MS = 5000
         private const val DNS_WORKERS = 8
@@ -69,6 +75,9 @@ class GwSocksServer(
         Thread(r, "gw-dns-tcp").apply { isDaemon = true }
     }
     private val connections = AtomicLong(0)
+
+    /** Текущее число UDP-сессий (каждая держит поток + сокет + буфер). */
+    private val udpSessions = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** Подряд идущие неудачи открытия канала; сбрасывается на первом успехе. */
     private val openFailures = AtomicInteger(0)
@@ -294,6 +303,29 @@ class GwSocksServer(
     }
 
     private fun handleUdpAssociate(socket: Socket, input: DataInputStream, output: DataOutputStream) {
+        // Каждая сессия держит отдельный поток + сокет + буфер. Без лимита
+        // QUIC-трафик приложений плодил десятки сессий: потоки/сокеты/буферы
+        // накапливались до OutOfMemoryError в udp.receive (крэш целиком
+        // убивал VPN). Лимит + idle-таймаут ограничивают объём: лишний
+        // ASSOCIATE просто закрывается, клиент переустановит сессию.
+        if (udpSessions.incrementAndGet() > MAX_UDP_SESSIONS) {
+            udpSessions.decrementAndGet()
+            Log.w(TAG, "UDP associate rejected: too many sessions")
+            replyAndClose(output, GENERAL_FAILURE, socket)
+            return
+        }
+        try {
+            handleUdpAssociateInner(socket, input, output)
+        } finally {
+            udpSessions.decrementAndGet()
+        }
+    }
+
+    private fun handleUdpAssociateInner(
+        socket: Socket,
+        input: DataInputStream,
+        output: DataOutputStream,
+    ) {
         readSkipReserved(input)
         readAddress(input)
 
@@ -310,17 +342,28 @@ class GwSocksServer(
         output.flush()
 
         connections.incrementAndGet()
+        // 16КБ хватает с запасом: tun-MTU ≈1500, максимальный QUIC-датаграмма
+        // ~1350. 64КБ на сессию × десятки сессий фрагментировали кучу до OOM.
+        val buffer = ByteArray(16 * 1024)
+        var lastActivity = System.nanoTime()
         try {
-            val buffer = ByteArray(65536)
             while (!socket.isClosed) {
                 val packet = DatagramPacket(buffer, buffer.size)
                 try {
                     udp.receive(packet)
                 } catch (_: java.net.SocketTimeoutException) {
+                    // Сессия без трафика дольше UDP_IDLE_TIMEOUT_MS освобождает
+                    // поток и сокет (контрол-сокет прикладухи может не закрываться).
+                    val idleMs = (System.nanoTime() - lastActivity) / 1_000_000
+                    if (idleMs > UDP_IDLE_TIMEOUT_MS) {
+                        Log.d(TAG, "UDP associate idle ${idleMs}ms — закрываю сессию")
+                        break
+                    }
                     continue
                 } catch (_: IOException) {
                     break
                 }
+                lastActivity = System.nanoTime()
 
                 val datagram = parseUdpDatagram(packet) ?: continue
                 val replyTo = packet.socketAddress

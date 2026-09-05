@@ -71,6 +71,20 @@ class MyApp : Application() {
     private fun installCrashCapture() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            // Известный крэш рекламного SDK (yads, через CAS-медиацию): SDK
+            // строит WebResourceResponse с пустой reason phrase — система
+            // бросает IllegalArgumentException на main-потоке, процесс умирает.
+            // Это не наш код и починить SDK мы не можем: такой крэш глотаем
+            // (Looper переживёт потерю одного сообщения) и пишем non-fatal,
+            // чтобы видеть частоту. Всё остальное — обычная обработка ниже.
+            if (isAdsReasonPhraseCrash(throwable)) {
+                runCatching {
+                    com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance()
+                        .recordException(throwable)
+                }
+                Timber.w(throwable, "Ads SDK reasonPhrase crash swallowed")
+                return@setDefaultUncaughtExceptionHandler
+            }
             runCatching {
                 val gwState = runCatching {
                     "gw.state=${com.witvpn.gw.GwManager.state} " +
@@ -93,6 +107,18 @@ class MyApp : Application() {
             }
             previous?.uncaughtException(thread, throwable)
         }
+    }
+
+    /**
+     * Точный фильтр крэша рекламного SDK: IllegalArgumentException
+     * "reasonPhrase can't be empty", брошенный конструктором
+     * android.webkit.WebResourceResponse. Ничего кроме этой сигнатуры
+     * guard не глотает.
+     */
+    private fun isAdsReasonPhraseCrash(throwable: Throwable): Boolean {
+        if (throwable !is IllegalArgumentException) return false
+        if (throwable.message?.startsWith("reasonPhrase can't be empty") != true) return false
+        return throwable.stackTrace.any { it.className == "android.webkit.WebResourceResponse" }
     }
 
     // your package name is the same with your main process name
