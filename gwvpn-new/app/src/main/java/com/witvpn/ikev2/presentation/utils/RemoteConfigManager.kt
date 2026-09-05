@@ -46,9 +46,11 @@ object RemoteConfigManager {
     private const val PREFS_NAME = "remote_config_cache"
 
     // Как часто разрешаем реально ходить в сеть за конфигом.
-    // В debug — сразу (0), в release — раз в час, чтобы не упираться в троттлинг Firebase.
+    // В debug — сразу (0), в release — раз в 30 минут. Ниже опускаться не
+    // стоит: Firebase начнёт троттлить fetch на своей стороне и отдавать
+    // закэшированный конфиг.
     private val MIN_FETCH_INTERVAL_SECONDS: Long =
-        if (BuildConfig.DEBUG) 0L else 3600L
+        if (BuildConfig.DEBUG) 0L else 1800L
 
     @Volatile
     private var firebaseAvailable = false
