@@ -631,7 +631,26 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                     }
 
                     when {
-                        isAwgMode -> updateAwgServerUI()
+                        isAwgMode -> {
+                            updateAwgServerUI()
+                            // Свежий выбор сервера из списка при активном туннеле —
+                            // переподключаемся к нему (аналог reconnectGwIfServerChanged
+                            // для GW). Без этого UI показывал новый сервер, а трафик
+                            // шёл через прежний (тот же exit IP). Путь через
+                            // setServerToConnect уже переподключился сам
+                            // (onServerSelectedFromList) — там selectedServer указывает
+                            // на новый сервер, дубликат не запускаем.
+                            if (AmneziaWGManager.isConnected()) {
+                                val target = savedServer.ipAddress?.let { ip ->
+                                    viewModel2.serversAwgList.value?.find { it.ipAddress == ip }
+                                }
+                                if (target != null &&
+                                    target.ipAddress != AmneziaWGManager.selectedServer?.ipAddress
+                                ) {
+                                    startAwgVpnInternal(target)
+                                }
+                            }
+                        }
                         isGwMode -> reconnectGwIfServerChanged(savedServer)
                     }
                 }
