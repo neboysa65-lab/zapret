@@ -113,11 +113,21 @@ object RemoteConfigManager {
      * (ApiFailoverInterceptor): основной api_base_url первым, затем
      * дополнительные из api_base_urls (каждый адрес с новой строки).
      * Дубли убираются, порядок из конфига сохраняется.
+     *
+     * Защита от опечатки в консоли: если адреса вставились одной строкой
+     * без переносов (…/vpn/api/v1/https://api03…), разрезаем по границам
+     * "https://" — иначе весь склеенный текст стал бы одним битым адресом.
      */
     fun getApiBaseUrls(context: Context): List<String> {
         val all = linkedSetOf(getApiBaseUrl(context))
         resolve(context, key = KEY_API_BASE_URLS, resourceDefault = "")
-            .lines()
+            .let { raw ->
+                if (raw.lines().size == 1 && raw.split("https://").size > 2) {
+                    raw.split("(?=https://)".toRegex())
+                } else {
+                    raw.lines()
+                }
+            }
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .map { if (it.endsWith("/")) it else "$it/" }
