@@ -37,6 +37,7 @@ REG_STATE="${REG_STATE:-0}"
 REG_PRIORITY="${REG_PRIORITY:-0}"
 REG_PREMIUM="${REG_PREMIUM:-false}"
 SKIP_REGISTER="${SKIP_REGISTER:-0}"     # 1 = только установка, без API
+EXIT_IP="${EXIT_IP:-}"                  # если задан (напр. доп. IP VPS) — NAT = SNAT на него, иначе MASQUERADE
 
 # ---------- Проверки ----------
 [[ $EUID -eq 0 ]] || { echo "Запусти от root: sudo bash $0"; exit 1; }
@@ -142,6 +143,13 @@ SERVER_ADDR="${TUNNEL_SUBNET%.*}.1/24"
 CLIENT_ADDR="${TUNNEL_SUBNET%.*}.2/24"
 SERVER_IP=$(curl -s -4 --max-time 10 ifconfig.me || echo "51.75.64.24")
 WAN_NIC=$(ip -4 route show default | awk '{print $5; exit}')
+if [[ -n "$EXIT_IP" ]]; then
+    NAT_ADD="iptables -t nat -A POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j SNAT --to-source ${EXIT_IP}"
+    NAT_DEL="iptables -t nat -D POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j SNAT --to-source ${EXIT_IP}"
+else
+    NAT_ADD="iptables -t nat -A POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j MASQUERADE"
+    NAT_DEL="iptables -t nat -D POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j MASQUERADE"
+fi
 
 # Общая обфускация: одинаковые значения в [Interface] сервера И клиента.
 OBF_PARAMS="Jc = ${AWG_Jc}
@@ -165,8 +173,8 @@ PrivateKey = ${SERVER_PRIVKEY}
 Address = ${SERVER_ADDR}
 ListenPort = ${AWG_PORT}
 MTU = ${AWG_MTU}
-PostUp = iptables -I FORWARD 1 -i %i -j ACCEPT; iptables -I FORWARD 1 -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j MASQUERADE
+PostUp = iptables -I FORWARD 1 -i %i -j ACCEPT; iptables -I FORWARD 1 -o %i -j ACCEPT; ${NAT_ADD}
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; ${NAT_DEL}
 ${OBF_PARAMS}
 
 [Peer]
