@@ -26,7 +26,17 @@ AWG_MTU="${AWG_MTU:-1280}"              # рекомендация Amnezia дл�
 TUNNEL_SUBNET="${TUNNEL_SUBNET:-10.8.1.0/24}"
 CLIENT_DNS="${CLIENT_DNS:-1.1.1.1, 8.8.8.8}"
 AWG_DIR="/root/awg31"
-SERVER_CONF="/etc/amnezia/${AWG_IFACE}.conf"   # стандартный путь awg-quick
+SERVER_CONF="/etc/amnezia/amneziawg/${AWG_IFACE}.conf"  # путь для PPA-сборки awg-quick
+
+# Регистрация в продовом API GreyWebVPN (чтобы сервер появился в клиенте).
+# Эндпоинты /bot/* БЕЗ подписи (их же использует setup_agent.sh).
+API_BASE="${API_BASE:-https://gwapi.vpnhub.xyz}"
+REG_COUNTRY="${REG_COUNTRY:-France}"
+REG_COUNTRY_CODE="${REG_COUNTRY_CODE:-FR}"
+REG_STATE="${REG_STATE:-0}"
+REG_PRIORITY="${REG_PRIORITY:-0}"
+REG_PREMIUM="${REG_PREMIUM:-false}"
+SKIP_REGISTER="${SKIP_REGISTER:-0}"     # 1 = только установка, без API
 
 # ---------- Проверки ----------
 [[ $EUID -eq 0 ]] || { echo "Запусти от root: sudo bash $0"; exit 1; }
@@ -58,7 +68,12 @@ add-apt-repository -y ppa:amnezia/ppa
 apt-get update -y
 
 echo ">> Установка AmneziaWG (kernel-модуль 3.x через DKMS + tools)..."
-apt-get install -y amneziawg-dkms amneziawg-tools
+# DKMS-сборка модуля требует headers под текущее ядро
+if ! apt-get install -y "linux-headers-$(uname -r)"; then
+    echo ">> Точные headers не найдены, ставлю linux-headers-generic"
+    apt-get install -y linux-headers-generic
+fi
+apt-get install -y amneziawg-dkms amneziawg-tools jq
 
 echo ">> Загрузка модуля..."
 depmod -a || true
@@ -78,28 +93,33 @@ CLIENT_PUBKEY=$(echo "$CLIENT_PRIVKEY" | awg pubkey)
 CLIENT_PSK=$(awg genkey)    # PSK == genkey (32 случайных байта, base64)
 
 # Jc/Jmin/Jmax — мусорные пакеты перед handshake
-AWG_Jc=$(shuf -i 4:12 -n 1)
-AWG_Jmin=$(shuf -i 40:60 -n 1)
-AWG_Jmax=$(shuf -i 71:1000 -n 1)
+AWG_Jc=$(shuf -i 4-12 -n 1)
+AWG_Jmin=$(shuf -i 40-60 -n 1)
+AWG_Jmax=$(shuf -i 71-1000 -n 1)
 
 # S1-S4 — дополнения перед типами пакетов (init/response/cookie/transport)
-AWG_S1=$(shuf -i 15:150 -n 1)
-AWG_S2=$(shuf -i 15:150 -n 1)
-AWG_S3=$(shuf -i 15:150 -n 1)
-AWG_S4=$(shuf -i 15:150 -n 1)
+AWG_S1=$(shuf -i 15-150 -n 1)
+AWG_S2=$(shuf -i 15-150 -n 1)
+AWG_S3=$(shuf -i 15-150 -n 1)
+AWG_S4=$(shuf -i 15-150 -n 1)
 
-# H1-H4 — случайные непересекающиеся диапазоны magic-заголовков
-gen_header_range() {
-    local base; base=$(shuf -i 5:50 -n 1)
-    echo "${base}-$((base + $(shuf -i 10:30 -n 1)))"
+# H1-H4 — случайные ГАРАНТИРОВАННО непересекающиеся диапазоны magic-заголовков
+# (рисуем последовательно: каждая следующая база минимум на 50 выше конца прошлой)
+gen_header_ranges() {
+    local cursor=5 out="" lo hi
+    for _ in 1 2 3 4; do
+        lo=$((cursor + $(shuf -i 0-40 -n 1)))
+        hi=$((lo + $(shuf -i 10-30 -n 1)))
+        out+="${lo}-${hi} "
+        cursor=$((hi + 50))
+    done
+    echo "$out"
 }
-AWG_H1=$(gen_header_range)
-AWG_H2=$(gen_header_range)
-AWG_H3=$(gen_header_range)
-AWG_H4=$(gen_header_range)
+read -r AWG_H1 AWG_H2 AWG_H3 AWG_H4 <<< "$(gen_header_ranges)"
 
-# HeaderProtectionKey — 32 байта hex (шифрование заголовков, только 3.0+)
-AWG_HPK=$(openssl rand -hex 32)
+# HeaderProtectionKey — 32 байта base64 (в конфиге base64: так ждут и ядро,
+# и Java-парсер клиента; в Go-движок Java конвертит в hex сам)
+AWG_HPK=$(awg genkey)
 
 # I1 — CPS-цепочка, теговый формат 3.1 (device/obf.go движка):
 #   <t>       — timestamp uint32 unix (анти-replay)
@@ -112,15 +132,16 @@ AWG_HPK=$(openssl rand -hex 32)
 AWG_I1="<t><r 64><rc 16>"
 
 # ContentPaddingAddition — рандомизация паддинга data-пакетов
-AWG_CPA=$(shuf -i 2:10 -n 1)
+AWG_CPA=$(shuf -i 2-10 -n 1)
 
 # ---------- 3. Конфиги ----------
 echo ">> Запись ${SERVER_CONF}..."
-mkdir -p /etc/amnezia
+mkdir -p /etc/amnezia/amneziawg
 umask 077
 SERVER_ADDR="${TUNNEL_SUBNET%.*}.1/24"
 CLIENT_ADDR="${TUNNEL_SUBNET%.*}.2/24"
 SERVER_IP=$(curl -s -4 --max-time 10 ifconfig.me || echo "51.75.64.24")
+WAN_NIC=$(ip -4 route show default | awk '{print $5; exit}')
 
 # Общая обфускация: одинаковые значения в [Interface] сервера И клиента.
 OBF_PARAMS="Jc = ${AWG_Jc}
@@ -144,6 +165,8 @@ PrivateKey = ${SERVER_PRIVKEY}
 Address = ${SERVER_ADDR}
 ListenPort = ${AWG_PORT}
 MTU = ${AWG_MTU}
+PostUp = iptables -I FORWARD 1 -i %i -j ACCEPT; iptables -I FORWARD 1 -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j MASQUERADE
 ${OBF_PARAMS}
 
 [Peer]
@@ -189,10 +212,6 @@ if command -v ufw >/dev/null; then
     fi
 fi
 
-nic=$(ip -4 route show default | awk '{print $5; exit}')
-# NAT пропишем в сам конфиг через PostUp/PostDown — переживёт reboot вместе с awg-quick
-sed -i "/^MTU = /a PostUp = iptables -I FORWARD 1 -i %i -j ACCEPT; iptables -I FORWARD 1 -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -s ${TUNNEL_SUBNET} -o ${nic} -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -s ${TUNNEL_SUBNET} -o ${nic} -j MASQUERADE" "$SERVER_CONF"
 
 # ---------- 5. Файлы клиента в /root/awg31 ----------
 mkdir -p "$AWG_DIR"
@@ -224,6 +243,52 @@ else
     UP_OK=0
     echo "!! awg-quick up не удался. Если ругань на 3.1-параметры — пришли лог:"
     echo "   journalctl -u awg-quick@${AWG_IFACE} --no-pager | tail -20"
+fi
+
+# ---------- 7. Регистрация в продовом API ----------
+# После успешной установки отправляем сервер в API GreyWebVPN: запись в
+# servers_awg появляется в клиенте (эндпоинт /user/server_awg фильтрует
+# status=true и отдаёт общий конфиг из записи, пока на сервере нет агента).
+if [[ "$SKIP_REGISTER" != "1" && "$UP_OK" -eq 1 ]]; then
+    echo ">> Регистрация сервера в API: ${API_BASE}"
+    reg_body=$(jq -n \
+        --arg ip "$SERVER_IP" \
+        --arg country "$REG_COUNTRY" \
+        --arg cc "$REG_COUNTRY_CODE" \
+        --arg state "$REG_STATE" \
+        --arg priority "$REG_PRIORITY" \
+        --arg config "$(cat "$AWG_DIR/client.conf.b64")" \
+        --argjson premium "$REG_PREMIUM" \
+        '{ip_address: $ip, country: $country, country_code: $cc, state: $state,
+          priority: ($priority | tonumber), recommend: false,
+          premium: $premium, status: true, config: $config}')
+
+    reg_resp=$(curl -s --max-time 20 -X POST \
+        -H "Content-Type: application/json" \
+        -d "$reg_body" \
+        "${API_BASE}/vpn/api/v1/bot/servers_awg/create" || echo '{"success":0}')
+
+    if echo "$reg_resp" | jq -e '.success == 1' >/dev/null 2>&1; then
+        echo ">> Сервер зарегистрирован в API: ${SERVER_IP} (${REG_COUNTRY})"
+        # Контрольная проверка: сервер виден в выдаче?
+        check=$(curl -s --max-time 15 \
+            "${API_BASE}/vpn/api/v1/bot/servers_awg/get?server_ip=${SERVER_IP}" || echo "")
+        if echo "$check" | jq -e '.success == 1' >/dev/null 2>&1; then
+            echo ">> Проверка API: сервер найден в выдаче (status=$(echo "$check" | jq -r '.data.status'))"
+        fi
+        echo "$reg_resp" > "$AWG_DIR/register-response.json"
+    else
+        echo "!! Регистрация в API НЕ удалась: $reg_resp"
+        echo "   Добавь вручную: curl -X POST ${API_BASE}/vpn/api/v1/bot/servers_awg/create -d @${AWG_DIR}/register-payload.json"
+        echo "$reg_body" > "$AWG_DIR/register-payload.json"
+    fi
+else
+    if [[ "$SKIP_REGISTER" == "1" ]]; then
+        echo ">> Регистрация в API пропущена (SKIP_REGISTER=1)."
+        echo "$CLIENT_CONF" | base64 -w0 > "$AWG_DIR/register-payload.json.source" 2>/dev/null || true
+    else
+        echo ">> Регистрация в API пропущена: туннель не поднят (UP_OK=$UP_OK)."
+    fi
 fi
 
 echo
