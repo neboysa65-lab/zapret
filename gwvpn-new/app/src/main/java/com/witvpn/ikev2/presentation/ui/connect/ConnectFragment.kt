@@ -1280,20 +1280,20 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             }
 
         if (isAwgMode && selectedAwg != null) {
+            AmneziaWGManager.selectedServer = selectedAwg
             if (AmneziaWGManager.isConnected()) {
-                AmneziaWGManager.stopVpn(requireContext())
+                // Переключение сервера при активном туннеле — БЕЗ отдельного
+                // stopVpn+задержки: setState(UP, новый конфиг) в GoBackend сам
+                // атомарно гасит старый туннель и поднимает новый. Раньше
+                // stop шёл отдельной корутиной, UP наезжал на него, и
+                // restore-путь GoBackend поднимал обратно СТАРЫЙ сервер —
+                // UI показывал новый, а IP оставался прежним.
+                updateAwgServerUI()
                 showProgress(true)
                 binding.tvState.text = getString(R.string.connecting, "...")
                 changeButtonColor(false)
-
-                AmneziaWGManager.selectedServer = selectedAwg
-                handler.postDelayed({
-                    if (isAdded) {
-                        startAwgVpnWithPermissionCheck(selectedAwg)
-                    }
-                }, 800)
+                startAwgVpnInternal(selectedAwg)
             } else {
-                AmneziaWGManager.selectedServer = selectedAwg
                 updateAwgServerUI()
             }
         } else if (isGwMode && selectedGw != null && selectedGw.config != null) {

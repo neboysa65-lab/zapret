@@ -21,6 +21,13 @@ object AmneziaWGManager {
     private var backend: GoBackend? = null
     private var isConnected = false
     private var trafficJob: kotlinx.coroutines.Job? = null
+
+    // Все переходы состояния туннеля — строго последовательно в одном потоке.
+    // Раньше stop/start шли независимыми корутинами: при переключении сервера
+    // DOWN не успевал за 800мс, UP наезжал на него, GoBackend падал и по
+    // своему restore-пути молча поднимал СТАРЫЙ туннель — UI показывал новый
+    // сервер, а трафик шёл через прежний.
+    private val stateExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     
     private val awgTunnel = object : Tunnel {
         override fun getName(): String = "gwvpn_awg"
@@ -117,12 +124,12 @@ object AmneziaWGManager {
             return
         }
 
-        GlobalScope.launch(Dispatchers.IO) {
+        stateExecutor.execute {
             try {
                 val b = ensureBackend(context) ?: run {
                     Log.e(TAG, "AmneziaWG backend unavailable on this device")
                     notifyListeners(Tunnel.State.DOWN)
-                    return@launch
+                    return@execute
                 }
                 // Decode base64 config
                 val decodedConfig = Base64.decode(server.config, Base64.DEFAULT)
@@ -131,6 +138,8 @@ object AmneziaWGManager {
                 val configStream = ByteArrayInputStream(configText.toByteArray(Charsets.UTF_8))
                 val awgConfig = Config.parse(configStream)
 
+                // setState(UP, новый конфиг) в GoBackend сам атомарно гасит
+                // активный туннель и поднимает новый — отдельный DOWN не нужен.
                 b.setState(awgTunnel, Tunnel.State.UP, awgConfig)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start AWG VPN", e)
@@ -196,7 +205,7 @@ object AmneziaWGManager {
     }
 
     fun stopVpn(context: Context) {
-        GlobalScope.launch(Dispatchers.IO) {
+        stateExecutor.execute {
             try {
                 backend?.setState(awgTunnel, Tunnel.State.DOWN, null)
             } catch (e: Exception) {
