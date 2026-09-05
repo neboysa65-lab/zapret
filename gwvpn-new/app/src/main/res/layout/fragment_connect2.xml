@@ -221,23 +221,6 @@
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/btn_vless"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@null"
-                android:drawableStart="@drawable/ic_vless"
-                android:drawablePadding="4dp"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp"
-                android:fontFamily="@font/play_bold"
-                android:gravity="center"
-                android:maxLines="1"
-                android:text="VLESS"
-                android:textColor="#8C9197"
-                android:textSize="12sp" />
-
-            <TextView
                 android:id="@+id/btn_awg"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
@@ -251,6 +234,23 @@
                 android:gravity="center"
                 android:maxLines="1"
                 android:text="AWG 3.1"
+                android:textColor="#8C9197"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/btn_vless"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@null"
+                android:drawableStart="@drawable/ic_vless"
+                android:drawablePadding="4dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:fontFamily="@font/play_bold"
+                android:gravity="center"
+                android:maxLines="1"
+                android:text="VLESS"
                 android:textColor="#8C9197"
                 android:textSize="12sp" />
 

@@ -9,7 +9,7 @@ import com.witvpn.ikev2.R
 import com.witvpn.ikev2.data.remote.ApiService
 import com.witvpn.ikev2.presentation.utils.RemoteConfigManager
 import com.witvpn.ikev2.presentation.utils.interceptor.ApiExceptionInterceptor
-import com.witvpn.ikev2.presentation.utils.interceptor.ApiFailoverInterceptor
+import com.witvpn.ikev2.presentation.utils.interceptor.DynamicBaseUrlInterceptor
 import com.witvpn.ikev2.presentation.utils.interceptor.ModifyRequestInterceptor
 import com.witvpn.ikev2.presentation.utils.interceptor.UnsafeOkHttpClient
 import dagger.Module
@@ -60,14 +60,10 @@ object RemoteSourceModule {
         val okHttpClient = UnsafeOkHttpClient.getUnsafeOkHttpClientBuilder()
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            // Connect 10s (а не 30s): при блокировке домена «в дроп» иначе
-            // каждый недоступный адрес из api_base_urls висел бы полминуты
-            // до перебора. Нормальный коннект к API укладывается в 1-2 секунды.
-            .connectTimeout(10, TimeUnit.SECONDS)
-            // Перебор адресов из Remote Config при блокировке текущего.
-            // Должен идти ДО подписи запроса (modifyRequestInterceptor),
-            // чтобы подпись считалась по итоговому хосту.
-            .addInterceptor(ApiFailoverInterceptor(context))
+            .connectTimeout(30, TimeUnit.SECONDS)
+            // Подмена домена «на лету» из Remote Config должна происходить ДО
+            // подписи запроса (modifyRequestInterceptor), поэтому добавляем её первой.
+            .addInterceptor(DynamicBaseUrlInterceptor { RemoteConfigManager.getApiBaseUrl(context) })
             .addInterceptor(modifyRequestInterceptor)
             .addInterceptor(logging)
             .addInterceptor(apiExceptionInterceptor)
@@ -75,8 +71,7 @@ object RemoteSourceModule {
 
         // baseUrl берётся из Remote Config (или из кэша/дефолта, если конфиг ещё
         // не скачался). Значение фиксируется на текущий запуск; смена хоста внутри
-        // сессии и перебор адресов при блокировке обеспечиваются
-        // ApiFailoverInterceptor выше.
+        // сессии дополнительно обеспечивается DynamicBaseUrlInterceptor выше.
         return Retrofit.Builder()
             .baseUrl(RemoteConfigManager.getApiBaseUrl(context))
             .addConverterFactory(GsonConverterFactory.create(gson))

@@ -7,7 +7,6 @@ import com.google.firebase.remoteconfig.ktx.remoteConfig
 import com.google.firebase.remoteconfig.ktx.remoteConfigSettings
 import com.witvpn.ikev2.BuildConfig
 import com.witvpn.ikev2.R
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import timber.log.Timber
 
 /**
@@ -30,27 +29,21 @@ import timber.log.Timber
  *
  * Ключи Remote Config (их и надо менять в панели Firebase):
  *   - api_base_url     — базовый URL API, напр. https://api.example.com/vpn/api/v1/
- *   - api_base_urls    — ДОПОЛНИТЕЛЬНЫЕ адреса API, каждый с новой строки
- *                        (перебор при блокировке см. ApiFailoverInterceptor)
  *   - payment_url      — URL оплаты с плейсхолдером %s для userId
- *                        (домен оплаты автоматически следует за рабочим API)
  *   - subscription_url — URL подписки со списком vless/hysteria2 нод
  */
 object RemoteConfigManager {
 
     const val KEY_API_BASE_URL = "api_base_url"
-    const val KEY_API_BASE_URLS = "api_base_urls"
     const val KEY_PAYMENT_URL = "payment_url"
     const val KEY_SUBSCRIPTION_URL = "subscription_url"
 
     private const val PREFS_NAME = "remote_config_cache"
 
     // Как часто разрешаем реально ходить в сеть за конфигом.
-    // В debug — сразу (0), в release — раз в 30 минут. Ниже опускаться не
-    // стоит: Firebase начнёт троттлить fetch на своей стороне и отдавать
-    // закэшированный конфиг.
+    // В debug — сразу (0), в release — раз в час, чтобы не упираться в троттлинг Firebase.
     private val MIN_FETCH_INTERVAL_SECONDS: Long =
-        if (BuildConfig.DEBUG) 0L else 1800L
+        if (BuildConfig.DEBUG) 0L else 3600L
 
     @Volatile
     private var firebaseAvailable = false
@@ -83,7 +76,6 @@ object RemoteConfigManager {
                         // Кэшируем актуальные значения, чтобы они были доступны
                         // синхронно уже на следующем холодном старте.
                         persist(context, KEY_API_BASE_URL, rc.getString(KEY_API_BASE_URL))
-                        persist(context, KEY_API_BASE_URLS, rc.getString(KEY_API_BASE_URLS))
                         persist(context, KEY_PAYMENT_URL, rc.getString(KEY_PAYMENT_URL))
                         persist(context, KEY_SUBSCRIPTION_URL, rc.getString(KEY_SUBSCRIPTION_URL))
                     } else {
@@ -111,48 +103,14 @@ object RemoteConfigManager {
     }
 
     /**
-     * Полный список базовых URL API для перебора при блокировке
-     * (ApiFailoverInterceptor): основной api_base_url первым, затем
-     * дополнительные из api_base_urls (каждый адрес с новой строки).
-     * Дубли убираются, порядок из конфига сохраняется.
-     *
-     * Защита от опечатки в консоли: если адреса вставились одной строкой
-     * без переносов (…/vpn/api/v1/https://api03…), разрезаем по границам
-     * "https://" — иначе весь склеенный текст стал бы одним битым адресом.
-     */
-    fun getApiBaseUrls(context: Context): List<String> {
-        val all = linkedSetOf(getApiBaseUrl(context))
-        resolve(context, key = KEY_API_BASE_URLS, resourceDefault = "")
-            .let { raw ->
-                if (raw.lines().size == 1 && raw.split("https://").size > 2) {
-                    raw.split("(?=https://)".toRegex())
-                } else {
-                    raw.lines()
-                }
-            }
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .map { if (it.endsWith("/")) it else "$it/" }
-            .forEach { all.add(it) }
-        return all.toList()
-    }
-
-    /**
      * URL оплаты. Содержит плейсхолдер %s для подстановки userId.
-     *
-     * Домен оплаты автоматически следует за рабочим адресом API
-     * (ApiEndpointStore): когда ApiFailoverInterceptor переехал на другой
-     * домен из api_base_urls, оплата открывается на нём же. Подмена
-     * выполняется только если домен оплаты совпадает с основным доменом
-     * API — вынесенную на отдельный домен оплату перебор не трогает.
      */
     fun getPaymentUrl(context: Context): String {
-        val raw = resolve(
+        return resolve(
             context,
             key = KEY_PAYMENT_URL,
             resourceDefault = BuildConfig.GRAYS_BILLING_URL
         )
-        return followPreferredApiHost(context, raw)
     }
 
     /**
@@ -172,28 +130,6 @@ object RemoteConfigManager {
     }
 
     // --- внутреннее ---
-
-    /**
-     * Подменяет в url scheme/host/port на адрес последнего рабочего API,
-     * сохраняя путь и query. Применяется только если домен url совпадает
-     * с текущим основным доменом API (платёж живёт на API-домене).
-     */
-    private fun followPreferredApiHost(context: Context, url: String): String {
-        val preferred = ApiEndpointStore.getPreferred(context)?.toHttpUrlOrNull()
-            ?: return url
-        val parsed = url.toHttpUrlOrNull() ?: return url
-        val apiBase = getApiBaseUrl(context).toHttpUrlOrNull()
-        // Платёж на отдельном домене — не трогаем.
-        if (apiBase == null || parsed.host != apiBase.host) return url
-        if (parsed.host == preferred.host && parsed.scheme == preferred.scheme) return url
-        val newUrl = parsed.newBuilder()
-            .scheme(preferred.scheme)
-            .host(preferred.host)
-            .port(preferred.port)
-            .build()
-        Timber.d("PaymentUrl: домен оплаты %s -> %s", parsed.host, preferred.host)
-        return newUrl.toString()
-    }
 
     private fun resolve(context: Context, key: String, resourceDefault: String): String {
         // 1) Firebase Remote Config (активное значение)
