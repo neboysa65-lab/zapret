@@ -73,8 +73,9 @@ public final class SharedLibraryLoader {
             Log.d(TAG, "Failed to load library normally, so attempting to extract from apk", e);
             noAbiException = e;
         }
-        File f = new File(context.getCodeCacheDir(), libName + ".so");
+        File f = null;
         try {
+            f = File.createTempFile("lib", ".so", context.getCodeCacheDir());
             if (extractLibrary(context, libName, f)) {
                 System.load(f.getAbsolutePath());
                 return;
@@ -82,6 +83,10 @@ public final class SharedLibraryLoader {
         } catch (final Exception e) {
             Log.d(TAG, "Failed to load library apk:/" + libName, e);
             noAbiException = e;
+        } finally {
+            if (f != null)
+                // noinspection ResultOfMethodCallIgnored
+                f.delete();
         }
         if (noAbiException instanceof RuntimeException)
             throw (RuntimeException) noAbiException;

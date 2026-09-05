@@ -72,9 +72,11 @@ public class BadConfigExceptionTest {
             Config.parse(CONFIG_MAP.get("invalid-number"));
             fail("Config parsing must fail in this test");
         } catch (final BadConfigException e) {
+            // Начиная с AWG 3.1 PersistentKeepalive — свободная строка (поддержка
+            // диапазонов вида "22-30"), невалидное число теперь проверяем на MTU.
             assertEquals(e.getReason(), Reason.INVALID_NUMBER);
-            assertEquals(e.getLocation(), Location.PERSISTENT_KEEPALIVE);
-            assertEquals(e.getSection(), Section.PEER);
+            assertEquals(e.getLocation(), Location.MTU);
+            assertEquals(e.getSection(), Section.INTERFACE);
         } catch (final IOException e) {
             e.printStackTrace();
             fail("IOException thrown during test");

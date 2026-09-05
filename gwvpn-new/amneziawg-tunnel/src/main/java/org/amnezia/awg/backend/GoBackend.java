@@ -45,7 +45,7 @@ import static org.amnezia.awg.GoBackend.*;
 public final class GoBackend implements Backend {
     private static final int DNS_RESOLUTION_RETRIES = 10;
     private static final String LEGACY_AWG_TUNNEL_NAME = "gwvpn_awg";
-    private static final String AWG_SESSION_DISPLAY_NAME = "GW Amnezia 2.0";
+    private static final String AWG_SESSION_DISPLAY_NAME = "GW Amnezia 3.1";
     private static final String TAG = "AmneziaWG/GoBackend";
     @Nullable private static AlwaysOnCallback alwaysOnCallback;
     private static GhettoCompletableFuture<VpnService> vpnService = new GhettoCompletableFuture<>();
