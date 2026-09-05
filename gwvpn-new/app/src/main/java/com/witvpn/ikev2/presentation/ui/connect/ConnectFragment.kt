@@ -591,6 +591,14 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         }
         shareViewModel.serverLiveData.observe(viewLifecycleOwner) { (status, savedServer, _) ->
             if (status == Status.SUCCESS) {
+                // Липкий replay: при пересоздании view (открыл список серверов —
+                // вернулся назад) LiveData отдаёт прошлое событие заново.
+                // Повторно перекрашивать протокол по нему нельзя — слетал
+                // выбор пользователя на протокол старого черновика.
+                val eventKey = "${savedServer?.id}:${savedServer?.protocol}:${savedServer?.ipAddress}"
+                if (eventKey == shareViewModel.lastProcessedServerEventKey) return@observe
+                shareViewModel.lastProcessedServerEventKey = eventKey
+
                 // Драфт протокола, которого больше нет (старые установки с
                 // IKEv2), или сервер, пропавший из свежего списка, — чистим.
                 val shouldClearSavedServer = savedServer?.let { server ->

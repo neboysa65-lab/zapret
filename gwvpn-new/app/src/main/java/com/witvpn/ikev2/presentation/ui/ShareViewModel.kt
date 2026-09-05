@@ -27,6 +27,13 @@ class ShareViewModel @Inject constructor(
     private val _serverMutableLiveData = MutableLiveData<Resource<Server?>>()
     val serverLiveData: LiveData<Resource<Server?>> = _serverMutableLiveData
 
+    // Ключ последнего события выбора сервера, УЖЕ обработанного получателем
+    // (ConnectFragment). LiveData «липкая»: при пересоздании view (открыл
+    // список серверов — вернулся назад) обсервер получает старое событие
+    // заново; без этой отметки он перекрашивал протокол в протокол старого
+    // черновика (например GW), затирая выбор пользователя.
+    var lastProcessedServerEventKey: String? = null
+
     val isPremium: Boolean
         get() = user?.hasPremiumSubscribe == true
 
