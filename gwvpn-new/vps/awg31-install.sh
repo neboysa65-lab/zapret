@@ -38,6 +38,7 @@ REG_PRIORITY="${REG_PRIORITY:-0}"
 REG_PREMIUM="${REG_PREMIUM:-false}"
 SKIP_REGISTER="${SKIP_REGISTER:-0}"     # 1 = только установка, без API
 EXIT_IP="${EXIT_IP:-}"                  # если задан (напр. доп. IP VPS) — NAT = SNAT на него, иначе MASQUERADE
+ENDPOINT_IP="${ENDPOINT_IP:-}"          # адрес в Endpoint клиентских конфигов (по умолчанию — основной IP VPS)
 
 # ---------- Проверки ----------
 [[ $EUID -eq 0 ]] || { echo "Запусти от root: sudo bash $0"; exit 1; }
@@ -142,6 +143,7 @@ umask 077
 SERVER_ADDR="${TUNNEL_SUBNET%.*}.1/24"
 CLIENT_ADDR="${TUNNEL_SUBNET%.*}.2/24"
 SERVER_IP=$(curl -s -4 --max-time 10 ifconfig.me || echo "51.75.64.24")
+CLIENT_ENDPOINT_IP="${ENDPOINT_IP:-$SERVER_IP}"
 WAN_NIC=$(ip -4 route show default | awk '{print $5; exit}')
 if [[ -n "$EXIT_IP" ]]; then
     NAT_ADD="iptables -t nat -A POSTROUTING -s ${TUNNEL_SUBNET} -o ${WAN_NIC} -j SNAT --to-source ${EXIT_IP}"
@@ -196,7 +198,7 @@ ${OBF_PARAMS}
 PublicKey = ${SERVER_PUBKEY}
 PresharedKey = ${CLIENT_PSK}
 AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = ${SERVER_IP}:${AWG_PORT}
+Endpoint = ${CLIENT_ENDPOINT_IP}:${AWG_PORT}
 PersistentKeepalive = 25
 "
 
