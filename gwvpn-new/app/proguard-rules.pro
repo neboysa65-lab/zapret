@@ -1,17 +1,17 @@
 # ══════════════════════════════════════════════════════════════════════════
-#  РЕЖИМ: обфусцируется ТОЛЬКО протокол GW (com.witvpn.gw.**).
-#  Весь остальной код сохраняет исходные имена, не удаляется и не
-#  оптимизируется — поведение приложения остаётся 1:1.
+#  ПОЛНОЦЕННЫЙ R8: сжатие + оптимизация + обфускация.
+#  Требование Google Play (метрики «Оптимизация приложения»): с фев 2027
+#  ниже 25% по любой из категорий — приложение реже показывается в поиске.
+#
+#  Точечные keep-правила ниже покрывают границы, где имена/поля критичны:
+#   - JNI (нативка ищет методы по имени) и фиксированные имена из C-кода;
+#   - Gson-сериализация (имена полей = ключи JSON, у части моделей без
+#     @SerializedName — политика LOWER_CASE_WITH_UNDERSCORES);
+#   - JCA-криптопровайдеры (BouncyCastle регистрирует классы по именам);
+#   - retrofit-эндпоинты.
+#  Сторонние SDK используют собственные consumer-rules из их AAR.
+#  mapping.txt загружается в Firebase Crashlytics плагином автоматически.
 # ══════════════════════════════════════════════════════════════════════════
-
-# Только переименование: без удаления кода и без агрессивных оптимизаций.
--dontshrink
--dontoptimize
-
-# Всё, КРОМЕ GW-модуля, остаётся с исходными именами: явный список пакетов
-# в файле proguard-keep-others.pro (автогенерация по фактическому списку
-# классов APK). Пакет com.witvpn.gw.** в нём отсутствует — только он
-# переименовывается.
 
 # Атрибуты, нужные рантайму (аннотации Hilt/Retrofit/Gson, generics, JNI).
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,Exceptions,RuntimeVisibleAnnotations,RuntimeInvisibleAnnotations
@@ -27,6 +27,41 @@
     valueOf(java.lang.String);
 }
 
+# Parcelable-поля восстанавливаются через CREATOR по имени.
+-keepclassmembers class * implements android.os.Parcelable {
+    public static final android.os.Parcelable$Creator CREATOR;
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Gson: имена полей = ключи JSON
+# ══════════════════════════════════════════════════════════════════════════
+# Модели API (часть полей без @SerializedName — стратегия
+# LOWER_CASE_WITH_UNDERSCORES) и черновики выбора сервера (Server.saveDraft),
+# HashRequestObject (подпись запросов).
+-keepclassmembers class com.witvpn.ikev2.data.remote.model.** { <fields>; }
+-keepclassmembers class com.witvpn.ikev2.domain.model.** { <fields>; }
+-keepclassmembers class com.witvpn.ikev2.presentation.utils.interceptor.HashRequestObject { <fields>; }
+
+# Retrofit-эндпоинты (интерфейсные методы читаются рефлексией).
+-keepclassmembers,allowshrinking,allowobfuscation interface * {
+    @retrofit2.http.* <methods>;
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Крипто/JCA и библиотеки, ищущие классы по именам
+# ══════════════════════════════════════════════════════════════════════════
+# BouncyCastle: провайдер регистрирует реализации по именам классов
+# (SecureRandom/Digest/подписи в sshj и web3j). Обфускация имён ломает JCA.
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.bouncycastle.**
+
+# sshj (SSH-транспорт внутри gw-tunnel): фабрики алгоритмов по именам.
+-keep class net.schmizz.** { *; }
+-dontwarn net.schmizz.**
+
+# Crypto-1.2.jar (локальный, без consumer-rules).
+-keep class ru.zoommax.** { *; }
+
 # ══════════════════════════════════════════════════════════════════════════
 #  Усиление обфускации для GW-классов
 # ══════════════════════════════════════════════════════════════════════════
@@ -36,7 +71,7 @@
 -classobfuscationdictionary proguard-dict.txt
 -packageobfuscationdictionary proguard-dict.txt
 
-# Спрятать оригинальную структуру пакетов GW-классов.
+# Спрятать оригинальную структуру пакетов обфусцируемых классов.
 -repackageclasses ''
 
 # Убрать следы исходников из стектрейсов (mapping.txt остаётся для

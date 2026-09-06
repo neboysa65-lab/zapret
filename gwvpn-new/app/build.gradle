@@ -34,14 +34,14 @@ android {
         applicationId "app.greywebs.vpn"
         minSdk 24
         targetSdk 36
-        versionCode 283
-        versionName "3.1.1"
+        versionCode 284
+        versionName "3.1.2"
 
         archivesBaseName = "GreyWebVPN-$versionName [$versionCode]"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        resValue("string", "base_url", "https://gwapi.vpnhub.xyz/vpn/api/v1/")
+        resValue("string", "base_url", "https://api01.vpnhub.xyz/vpn/api/v1/")
 
         // Ссылка-подписка (subscription) со списком vless/hysteria2 нод.
         // Как и base_url — это лишь ДЕФОЛТ; актуальное значение приходит из
@@ -52,7 +52,7 @@ android {
         // CAS.AI application identifier from the CAS dashboard.
         buildConfigField("String", "CAS_ID", '"app.greywebs.vpn"')
 
-        buildConfigField("String", "GRAYS_BILLING_URL", '"https://gwapi.vpnhub.xyz/vpn/client/payment/new?userId=%s"')
+        buildConfigField("String", "GRAYS_BILLING_URL", '"https://api01.vpnhub.xyz/vpn/client/payment/new?userId=%s"')
         buildConfigField("boolean", "CHECK_IN_APP_UPDATES", "true")
 
         ndk {
@@ -73,14 +73,15 @@ android {
     buildTypes {
         release {
             signingConfig signingConfigs.release
-            // Обфускация R8 включена; правила в proguard-rules.pro переименовывают
-            // ТОЛЬКО пакет протокола GW (com.witvpn.gw.**), остальной код не трогается
-            // (-dontshrink / -dontoptimize / глобальный -keep).
+            // Полноценный R8: сжатие + оптимизация + обфускация (метрики
+            // Play «Оптимизация приложения» требуют >= 25% по каждой
+            // категории). Границы, где имена/поля критичны (JNI, Gson,
+            // JCA, retrofit), закрыты точечными keep-правилами в
+            // proguard-rules.pro; сторонние SDK — их consumer-rules.
             minifyEnabled true
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
-                'proguard-rules.pro',
-                'proguard-keep-others.pro'
+                'proguard-rules.pro'
             // Символьные таблицы нативных .so кладутся в BUNDLE-METADATA AAB —
             // иначе Play Console ругается «загрузите файл с отладочными символами».
             ndk {
@@ -117,6 +118,33 @@ android {
         jniLibs {
             keepDebugSymbols += ['**/*.so']
         }
+    }
+}
+
+// ─── Полноценная обфускация рекламных SDK ───────────────────────────────────
+// Вендорские consumer-rules рекламных SDK содержат wildcard-keep вида
+// '-keep class com.mbridge.** {*;}' (в т.ч. многострочные) — десятки тысяч
+// классов сохраняют имена, и метрика Play «Обфускация» не дотягивает до
+// порога 25%. Перед запуском R8 вырезаем ТОЛЬКО такие wildcard-правила из
+// их proguard.txt (в кэше Gradle); узкие правила SDK (JNI/reflection-входы,
+// Parcelable, -dontwarn) остаются — R8 сам трассирует все прямые вызовы из
+// CAS-адаптеров.
+def adSdkWildcardKeep = ~/(?m)^\s*-keep\s+(?:public\s+|protected\s+|private\s+)*(?:class|interface)\s+(?:com\.mbridge|com\.ironsource|com\.unity3d|sg\.bigo|com\.inmobi|com\.vungle|com\.monetrix|com\.brandio|gatewayprotocol)\.[\w.]*\*\*\s*\{\s*\*;\s*\}\s*$/
+def stripAdSdkKeeps = { files ->
+    files.findAll { it.isFile() && (it.name == "proguard.txt" || it.name.endsWith(".pro")) }
+         .findAll { it.absolutePath.replace('\\', '/').contains(".gradle/") }
+         .each { f ->
+            def text = f.getText("UTF-8")
+            def stripped = text.replaceAll(adSdkWildcardKeep, "").replaceAll("\n{3,}", "\n\n")
+            if (stripped != text) {
+                f.write(stripped, "UTF-8")
+                println("R8 strip: wildcard-keep рекламного SDK убран из ${f}")
+            }
+         }
+}
+tasks.matching { it.name == "minifyReleaseWithR8" }.configureEach { t ->
+    doFirst {
+        stripAdSdkKeeps(t.inputs.files.files.findAll { it != null && (it.name == "proguard.txt" || it.name.endsWith(".pro")) })
     }
 }
 
