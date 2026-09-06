@@ -80,9 +80,12 @@ android {
                 "proguard-rules.pro"
             )
             
-            // Отключаем автоматическую загрузку маппингов Crashlytics, так как она падает с 502 Bad Gateway
+            // Автозагрузка mapping.txt в Crashlytics: без неё дезобфусцированные
+            // стектрейсы приходят как t3.d / N5.t0. Раньше отключали из-за 502 Bad
+            // Gateway — причиной был прокси в глобальном gradle.properties, который
+            // теперь работает; загрузка снова включена.
             configure<com.google.firebase.crashlytics.buildtools.gradle.CrashlyticsExtension> {
-                mappingFileUploadEnabled = false
+                mappingFileUploadEnabled = true
             }
         }
     }

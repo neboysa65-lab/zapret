@@ -207,8 +207,16 @@ object VyomVpnManager {
             addAction(ACTION_VPN_TRAFFIC)
         }
 
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0
-        context.registerReceiver(internalReceiver, filter, flags)
+        // Трёхаргный registerReceiver доступен только с API 26 — на Android 7
+        // он даёт NoSuchMethodError (реальный крэш в проде). Та же правка
+        // сделана в MainActivity.registerStateReceiver.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val flags =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0
+            context.registerReceiver(internalReceiver, filter, flags)
+        } else {
+            context.registerReceiver(internalReceiver, filter)
+        }
     }
 
     fun unregisterListener(context: Context) {

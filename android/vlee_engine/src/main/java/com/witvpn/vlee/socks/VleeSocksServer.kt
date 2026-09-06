@@ -14,6 +14,9 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -43,8 +46,35 @@ class VleeSocksServer(
         private const val DNS_TCP_TIMEOUT_MS = 5000
         private const val DNS_WORKERS = 8
         private const val RELAY_BUFFER_BYTES = 16 * 1024
-        /** Сколько ждём догрузки ответа после EOF от приложения. */
-        private const val RELAY_DRAIN_TIMEOUT_MS = 30_000L
+
+        /** Потолок живых UDP-ассоциаций: каждая держит воркер пула + 64 КБ буфер. */
+        private const val MAX_UDP_SESSIONS = 48
+
+        /** Таймаут receive() UDP-сокета — один тик простоя. */
+        private const val UDP_SO_TIMEOUT_MS = 1000
+
+        /** UDP-ассоциация, молчащая дольше этого числа тиков (5 мин), закрывается. */
+        private const val UDP_IDLE_TIMEOUT_TICKS = 300
+
+        /**
+         * Таймаут простоя релея. Приложения-браузеры держат keep-alive сокеты
+         * открытыми и молча брошенными; без таймаута каждый такой сокет навсегда
+         * держит два заблокированных потока — на телефоне через туннель идёт
+         * ВЕСЬ трафик, и потоки копились сотнями до OutOfMemoryError (реальный
+         * крэш с ~300 воркерами в дампе). Браузер прозрачно переоткроет сокет,
+         * когда он снова понадобится.
+         */
+        private const val RELAY_IDLE_TIMEOUT_MS = 180_000
+
+        /**
+         * Жёсткий потолок одновременных сессий. Превышение — вежливый отказ
+         * (приложение переоткроет соединение позже): лучше отказ, чем OOM всего
+         * процесса вместе с VPN.
+         */
+        private const val MAX_SESSIONS = 384
+
+        /** Потолок пула воркеров (и CONNECT, и upstream-направление из него же). */
+        private const val MAX_POOL_THREADS = 128
 
         /**
          * Сколько подряд неудачных открытий канала считаем приговором транспорту.
@@ -59,9 +89,32 @@ class VleeSocksServer(
     }
 
     private var serverSocket: ServerSocket? = null
-    private val executor: ExecutorService = Executors.newCachedThreadPool { r ->
-        Thread(r, "vlee-socks-worker").apply { isDaemon = true }
-    }
+
+    /**
+     * Флаг остановки. UDP-ассоциации живут в цикле receive с таймаутом 1 с и
+     * выходят только по закрытию контрольного сокета клиентом; без флага
+     * после stop() такой цикл продолжал крутиться и пытаться отдавать работу
+     * в остановленные пулы.
+     */
+    @Volatile private var stopped = false
+
+    /**
+     * Пул воркеров с ЖЁСТКИМ потолком. Оригинальный newCachedThreadPool плодил
+     * по 2 потока на каждое соединение без ограничений — на телефоне с лимитом
+     * кучи 128 МБ это кончилось OutOfMemoryError (сотни потоков в дампе краша).
+     * Переполнение пула исполняется на accept-потоке: accept подтормаживает,
+     * но очередь ОС (backlog 128) сглаживает — вместо роста числа потоков.
+     */
+    private val executor: ExecutorService = object : ThreadPoolExecutor(
+        16, MAX_POOL_THREADS, 60L, TimeUnit.SECONDS,
+        SynchronousQueue(),
+        { r -> Thread(r, "vlee-socks-worker").apply { isDaemon = true } },
+    ) {
+        init {
+            allowCoreThreadTimeOut(true)
+        }
+    }.apply { rejectedExecutionHandler = ThreadPoolExecutor.CallerRunsPolicy() }
+
     // DNS-over-TCP резолвы идут параллельно: один медленный апстрим не должен
     // задерживать остальные запросы (раньше единственный поток + таймаут 5 с
     // на запрос выстраивали все резолвы страницы в очередь).
@@ -72,6 +125,9 @@ class VleeSocksServer(
 
     /** Подряд идущие неудачи открытия канала; сбрасывается на первом успехе. */
     private val openFailures = AtomicInteger(0)
+
+    /** Живые UDP-ассоциации (каждая занимает воркер пула, пока не закрыта). */
+    private val udpSessions = AtomicInteger(0)
 
     /**
      * Открывает direct-tcpip канал через текущий транспорт.
@@ -137,6 +193,7 @@ class VleeSocksServer(
     }
 
     fun start() {
+        stopped = false
         val ss = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
         serverSocket = ss
         port = ss.localPort
@@ -155,6 +212,7 @@ class VleeSocksServer(
     }
 
     fun stop() {
+        stopped = true
         runCatching { serverSocket?.close() }
         executor.shutdownNow()
         dnsExecutor.shutdownNow()
@@ -220,6 +278,12 @@ class VleeSocksServer(
     }
 
     private fun handleConnect(socket: Socket, input: DataInputStream, output: DataOutputStream) {
+        // Жёсткий потолок одновременных сессий: отказ лучше OOM всего процесса.
+        if (connections.get() >= MAX_SESSIONS) {
+            Log.w(TAG, "session cap reached (${connections.get()}), refusing CONNECT")
+            return replyAndClose(output, GENERAL_FAILURE, socket)
+        }
+
         readSkipReserved(input)
         val target = readAddress(input)
         if (target == null) {
@@ -239,10 +303,13 @@ class VleeSocksServer(
             val chIn = channel.inputStream
             val chOut = channel.outputStream
 
-            // Обе половины дуплекса живут независимо. Раньше выход из upload-цикла
-            // по EOF от приложения сразу закрывал канал и сокет в finally — ответ
-            // сервера, ещё летящий в обратную сторону, обрезался на полуслове.
-            val upstream = Thread({
+            // Таймаут простоя релеет брошенные keep-alive сокеты (см. константу).
+            socket.soTimeout = RELAY_IDLE_TIMEOUT_MS
+
+            // Upstream живёт в том же ограниченном пуле, БЕЗ отдельного сырого
+            // потока и БЕЗ join: воркер в finally закрывает socket/channel —
+            // upstream разблокируется чтением из закрытого потока и выходит сам.
+            executor.execute {
                 try {
                     val buf = ByteArray(RELAY_BUFFER_BYTES)
                     val localIn = socket.getInputStream()
@@ -252,18 +319,19 @@ class VleeSocksServer(
                         chOut.write(buf, 0, n)
                         chOut.flush()
                     }
+                } catch (_: java.net.SocketTimeoutException) {
+                    // Простой дольше RELAY_IDLE_TIMEOUT_MS — брошенный сокет.
+                    runCatching { channel.close() }
                 } catch (_: IOException) {
                 } finally {
                     // EOF вверх по потоку — сообщаем его SSH-каналу, но канал не
                     // рвём: сервер ещё может досылать ответ.
                     runCatching { chOut.close() }
                 }
-            }, "vlee-socks-up").apply { isDaemon = true }
+            }
 
-            upstream.start()
-
-            // Downstream крутим прямо в текущем воркере: на соединение уходит два
-            // потока, а не три (на загрузке страницы это десятки соединений).
+            // Downstream крутим прямо в текущем воркере: на соединение уходит
+            // не больше одного потока из пула, а не два+сырой поток.
             try {
                 val buf = ByteArray(RELAY_BUFFER_BYTES)
                 val localOut = socket.getOutputStream()
@@ -278,13 +346,6 @@ class VleeSocksServer(
                 // Полузакрытие: приложение видит EOF, но может продолжать слать.
                 runCatching { socket.shutdownOutput() }
             }
-
-            // Ответ уже дочитан; на догрузку запроса даём ограниченное время:
-            // иначе застрявший на read() upload-поток жил бы до конца сессии,
-            // даже когда удалённая сторона давно закрылась.
-            upstream.join(RELAY_DRAIN_TIMEOUT_MS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
         } finally {
             connections.decrementAndGet()
             // Закрытие здесь же разблокирует upstream, если он всё ещё в read().
@@ -297,9 +358,18 @@ class VleeSocksServer(
         readSkipReserved(input)
         readAddress(input)
 
+        // Отдельный потолок UDP-ассоциаций. tun2socks держит контрольный TCP-сокет
+        // открытым неопределённо долго, поэтому без капа каждая ассоциация навсегда
+        // занимала воркер пула и 64 КБ буфер — главный источник OutOfMemoryError из
+        // продовых дампов (десятки потоков, застрявших в DatagramSocket.receive).
+        if (udpSessions.get() >= MAX_UDP_SESSIONS) {
+            Log.w(TAG, "UDP associate cap reached (${udpSessions.get()}), refusing")
+            return replyAndClose(output, GENERAL_FAILURE, socket)
+        }
+
         val udp = DatagramSocket(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0))
         udp.reuseAddress = true
-        udp.soTimeout = 1000
+        udp.soTimeout = UDP_SO_TIMEOUT_MS
 
         val reply = byteArrayOf(
             VERSION.toByte(), 0x00, 0x00, ATYP_IPV4.toByte(),
@@ -310,13 +380,23 @@ class VleeSocksServer(
         output.flush()
 
         connections.incrementAndGet()
+        udpSessions.incrementAndGet()
         try {
             val buffer = ByteArray(65536)
-            while (!socket.isClosed) {
+            var idleTicks = 0
+            while (!socket.isClosed && !stopped) {
                 val packet = DatagramPacket(buffer, buffer.size)
                 try {
                     udp.receive(packet)
+                    idleTicks = 0
                 } catch (_: java.net.SocketTimeoutException) {
+                    // Клиент молчит UDP_IDLE_TIMEOUT_TICKS тиков подряд — брошенная
+                    // ассоциация: закрываем и освобождаем воркер с буфером.
+                    idleTicks++
+                    if (idleTicks >= UDP_IDLE_TIMEOUT_TICKS) {
+                        Log.w(TAG, "UDP associate idle >${UDP_IDLE_TIMEOUT_TICKS}s, closing")
+                        break
+                    }
                     continue
                 } catch (_: IOException) {
                     break
@@ -342,6 +422,7 @@ class VleeSocksServer(
             }
         } finally {
             connections.decrementAndGet()
+            udpSessions.decrementAndGet()
             runCatching { udp.close() }
             closeQuietly(socket)
         }
@@ -389,11 +470,18 @@ class VleeSocksServer(
     private fun relayUdp(dgram: UdpDatagram): ByteArray? {
         if (dnsOverTcp && dgram.dstPort == DNS_PORT && dgram.payload.isNotEmpty()) {
             // Таймаут всё равно нужен: зависший апстрим не должен держать воркер.
-            val future = dnsExecutor.submit(
-                java.util.concurrent.Callable<ByteArray?> {
-                    resolveDnsOverTcp(dgram.dstHost.hostAddress ?: "8.8.8.8", dgram.payload)
-                }
-            )
+            // Пул мог быть уже остановлен (stop() во время живой UDP-сессии):
+            // тогда submit бросает RejectedExecutionException и убивает весь
+            // процесс — при остановке VPN DNS-запрос просто дропаем.
+            val future = try {
+                dnsExecutor.submit(
+                    java.util.concurrent.Callable<ByteArray?> {
+                        resolveDnsOverTcp(dgram.dstHost.hostAddress ?: "8.8.8.8", dgram.payload)
+                    }
+                )
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                return null
+            }
             return try {
                 future.get(DNS_TCP_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
             } catch (e: Exception) {

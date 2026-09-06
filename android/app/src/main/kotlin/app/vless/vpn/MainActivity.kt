@@ -219,9 +219,18 @@ class MainActivity : FlutterActivity() {
             addAction(VyomVpnManager.ACTION_VPN_STATE)
             addAction(VyomVpnManager.ACTION_VPN_TRAFFIC)
         }
-        val flags =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_NOT_EXPORTED else 0
-        registerReceiver(receiver, filter, flags)
+        // Трёхаргный registerReceiver(receiver, filter, flags) существует только
+        // с API 26; на Android 7 (API 24/25) он валил приложение NoSuchMethodError
+        // ещё до первого кадра UI. На API < 26 флагов экспорта не существует —
+        // динамические приёмники там и так всегда экспортируемые.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val flags =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_NOT_EXPORTED else 0
+            registerReceiver(receiver, filter, flags)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(receiver, filter)
+        }
         stateReceiver = receiver
     }
 
