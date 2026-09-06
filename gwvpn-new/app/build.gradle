@@ -129,7 +129,7 @@ android {
 // их proguard.txt (в кэше Gradle); узкие правила SDK (JNI/reflection-входы,
 // Parcelable, -dontwarn) остаются — R8 сам трассирует все прямые вызовы из
 // CAS-адаптеров.
-def adSdkWildcardKeep = ~/(?m)^\s*-keep\s+(?:public\s+|protected\s+|private\s+)*(?:class|interface)\s+(?:com\.mbridge|com\.ironsource|com\.unity3d|sg\.bigo|com\.inmobi|com\.vungle|com\.monetrix|com\.brandio|gatewayprotocol)\.[\w.]*\*\*\s*\{\s*\*;\s*\}\s*$/
+def adSdkWildcardKeep = ~/(?m)^\s*-keep\s+(?:public\s+|protected\s+|private\s+)*(?:class|interface)\s+(?:com\.mbridge|com\.ironsource|com\.unity3d|sg\.bigo|com\.inmobi|com\.vungle|com\.monetrix|com\.brandio|gatewayprotocol|io\.appmetrica)\.[\w.]*\*\*\s*\{\s*\*;\s*\}\s*$/
 def stripAdSdkKeeps = { files ->
     files.findAll { it.isFile() && (it.name == "proguard.txt" || it.name.endsWith(".pro")) }
          .findAll { it.absolutePath.replace('\\', '/').contains(".gradle/") }
