@@ -88,7 +88,12 @@ fun Activity?.hideKeyboardWhenTouchOutside(view: View?, callback: (() -> Unit)? 
 }
 
 fun Context?.showToast(message: String?) {
-    Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    // Android 14+: Toast.makeText(ctx, null, ...) создаёт тост без текста и
+    // view — show() кидает IllegalStateException «You must either set a text
+    // or a view» и процесс падает (крэш-луп на старте, когда обработчик
+    // ошибки логина зовёт showToast(null)). Null/пустое — просто не показываем.
+    if (this == null || message.isNullOrBlank()) return
+    runCatching { Toast.makeText(this, message, Toast.LENGTH_SHORT).show() }
 }
 
 fun Context?.readAsset(fileName: String) = this
