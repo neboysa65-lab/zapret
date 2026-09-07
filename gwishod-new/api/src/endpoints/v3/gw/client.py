@@ -72,7 +72,12 @@ async def get_servers_gw(request: Request):
         servers = await ServerPojo.find_enabled()
         data = []
         for s in servers:
+            # Premium-нода для free-юзера: отдаём meta БЕЗ зашифрованного
+            # конверта (как server_awg отдаёт пустой config) — нода видна
+            # в списке «Pro Сервера» как замануха, подключиться к ней
+            # free не может (секрета в ответе нет).
             if s.premium and not user.is_premium:
+                data.append({"meta": public_server_view(s.to_doc()), "enc": None})
                 continue
             try:
                 secret = _secret_view(s)

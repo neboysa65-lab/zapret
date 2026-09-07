@@ -78,7 +78,10 @@ class TabFragment() : BaseFragment<FragmentTabBinding>(R.layout.fragment_tab) {
             combined.addAll(awgServers)
         } else if (protocolFilter == "GW") {
             val gwServers = viewModel.serversGwList.value
-                ?.filter { it.status && it.config != null }
+                // premium-нода free-юзера приходит без конфига (meta-only,
+                // замануха на вкладке Pro Сервера) — показываем её, но
+                // подключение к ней заблокировано прайс-воронкой.
+                ?.filter { it.status && (it.config != null || it.premium) }
                 ?.map { com.witvpn.ikev2.domain.model.Server.fromGw(it) }
                 ?.filter { it.premium == premium }
                 ?: emptyList()

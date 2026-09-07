@@ -94,7 +94,10 @@ class ServerRepositoryImpl @Inject constructor(
                     )
                 }
             }
-            val usable = decoded.filter { it.config != null }
+            // premium meta-only нода (free-юзеру конверт не шлём) — тоже
+            // «пригодна»: она отображается на вкладке Pro Сервера как замануха,
+            // подключение к ней блокирует прайс-воронка (handleServerClicked).
+            val usable = decoded.filter { it.config != null || it.premium }
             val failed = decoded.size - usable.size
             if (failed > 0) {
                 android.util.Log.w(
