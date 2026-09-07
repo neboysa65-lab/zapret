@@ -376,8 +376,10 @@ async def get_servers_stats():
         gw_data = []
         gw_online = 0
         for s in gw_servers:
+            # ip_address — домен ноды: Cloudflare роутит /gw-stats по SNI.
+            # proxy_host — CF-IP: без Host-заголовка бридж не отвечает (403).
             server_count = await get_gw_tunnel_count(
-                s.proxy_host or s.ip_address, s.stats_token
+                s.ip_address or s.proxy_host, s.stats_token
             )
             if server_count is not None:
                 online = server_count
