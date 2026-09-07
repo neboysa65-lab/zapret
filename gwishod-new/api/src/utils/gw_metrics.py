@@ -107,7 +107,9 @@ async def update_gw_load_once() -> None:
     for s in servers:
         if not s.ip_address:
             continue
-        host = s.proxy_host or s.ip_address
+        # ip_address — домен ноды: Cloudflare роутит /gw-stats по SNI.
+        # proxy_host — CF-IP: без Host-заголовка бридж не отвечает (403).
+        host = s.ip_address or s.proxy_host
         try:
             stats = await get_gw_stats(host, s.stats_token)
         except Exception as e:
