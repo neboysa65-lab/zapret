@@ -47,6 +47,17 @@
     @retrofit2.http.* <methods>;
 }
 
+# Retrofit suspend + R8 full mode: тип ответа suspend-метода живёт только в
+# generic-сигнатуре Continuation. Даже с библиотечными -if-правилами R8 full
+# mode стирал сигнатуру эндпоинтов -> Gson отдавал LinkedTreeMap вместо
+# LoginResponse -> ClassCastException в createAnonymousUser (qa-сборка).
+# Интерфейс целиком: имена методов, аннотации и Signature-атрибуты.
+-keep interface com.witvpn.ikev2.data.remote.ApiService { *; }
+
+# Модели ответов целиком (имена классов + поля) — конвертер Gson резолвит
+# тип по generic-сигнатуре эндпоинта.
+-keep class com.witvpn.ikev2.data.remote.model.** { *; }
+
 # ══════════════════════════════════════════════════════════════════════════
 #  Крипто/JCA и библиотеки, ищущие классы по именам
 # ══════════════════════════════════════════════════════════════════════════
@@ -81,6 +92,14 @@
 
 # Строки-константы не «склеивать» с местами использования.
 -adaptclassstrings com.witvpn.gw.**
+
+# ─── Рефлексия по именам R-полей ───
+# Utils.getResId() ищет drawable через R.drawable::class.java.getDeclaredField
+# ("germany" -> R.drawable.germany). Полный R8 переименовывает/удаляет поля
+# R-класса — флаги в списках серверов пропадали. Имена полей R.drawable
+# становятся частью «API» приложения, keep обязателен. (AGP сам держит
+# правила для aapt-ресурсов, но поля R-класса под minify не защищены.)
+-keepclassmembers class com.witvpn.ikev2.R$drawable { public static <fields>; }
 
 # ─── Missing classes: compile-only ссылки сторонних SDK (не влияют на работу) ───
 -dontwarn com.google.ads.mediation.common.AgeRestrictedTreatmentUtils
