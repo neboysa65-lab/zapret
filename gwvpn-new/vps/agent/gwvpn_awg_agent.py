@@ -347,6 +347,40 @@ def count_agent_peers() -> int:
     return len(re.findall(r"^#_Name = %s" % re.escape(PEER_PREFIX), read_server_conf(), re.MULTILINE))
 
 
+def collect_stats() -> dict:
+    """Метрики для load% в API: активные туннели и суммарный трафик.
+
+    Источник — `awg show awg0 transfer` (накопительные счётчики байт по пирам,
+    cp/1 скорее всего 0 -> игнорируем) + число пиров с ненулевым handshake-периодом
+    считать не нужно: активным считаем пир с transfer > 0 за жизнь. API считает
+    скорость из дельт этих накопительных значений — как у GW-бриджа.
+    """
+    out = run(["awg", "show", "awg0", "transfer"])
+    tunnels = 0
+    bytes_tx = 0
+    bytes_rx = 0
+    for line in out.strip().splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            rx = int(parts[1])
+            tx = int(parts[2])
+        except ValueError:
+            continue
+        # пир с нулевым transfer ещё не обменивался данными — не «активный»
+        if rx > 0 or tx > 0:
+            tunnels += 1
+        bytes_rx += rx
+        bytes_tx += tx
+    return {
+        "active_tunnels": tunnels,
+        "bytes_tx": bytes_tx,
+        "bytes_rx": bytes_rx,
+        "total_peers": count_agent_peers(),
+    }
+
+
 # ------------------------------------------------------------------------------
 # Cleanup (CLI): удаление пиров без handshake дольше N дней
 # ------------------------------------------------------------------------------
@@ -467,6 +501,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"success": 1, "peers": count_agent_peers()})
             except Exception as e:
                 log.exception("health failed")
+                return self._send(500, {"success": 0, "message": str(e)})
+        if self.path == "/v1/stats":
+            try:
+                return self._send(200, collect_stats())
+            except Exception as e:
+                log.exception("stats failed")
                 return self._send(500, {"success": 0, "message": str(e)})
         return self._send(404, {"success": 0, "message": "not found"})
 

@@ -7,7 +7,7 @@ from src.utils.premium_unloader import unload_premium, unload_premium_v3, unload
 from src.utils.notificator import periodic_task
 from src.old_deleter import delete_users
 from src.utils.server_metrics import update_server_metrics_loop, update_ipsec_online_loop
-from src.utils.gw_metrics import update_gw_load_loop
+from src.utils.gw_metrics import update_gw_load_loop, update_awg_load_loop
 from src.endpoints.server import app
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ async def main():
     asyncio.create_task(update_server_metrics_loop())
     asyncio.create_task(update_ipsec_online_loop())
     asyncio.create_task(update_gw_load_loop())
+    asyncio.create_task(update_awg_load_loop())
 
     logger.info("API is ready")
 

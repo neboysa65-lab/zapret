@@ -183,3 +183,142 @@ async def update_gw_load_loop():
         except Exception as e:
             logger.error(f"Error in update_gw_load_loop: {e}")
         await asyncio.sleep(GW_POLL_INTERVAL_SECONDS)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  AWG-ноды: load% из provisioning-агента (GET /v1/stats на порту агента).
+#  Формат ответа совпадает с GW-бриджем (active_tunnels, bytes_tx, bytes_rx),
+#  поэтому пересчёт нагрузки — тот же код, что и для GW выше.
+# ══════════════════════════════════════════════════════════════════════════
+
+AWG_POLL_INTERVAL_SECONDS = 60
+AWG_AGENT_PORT = 39744
+
+
+async def get_awg_stats(host: str, token: str) -> dict | None:
+    """Метрики с provisioning-агента AWG-ноды. None — недоступна/токена нет."""
+    if not host or not token:
+        return None
+
+    cached = _STATS_CACHE.get(f"awg:{host}:{token}")
+    now = time.monotonic()
+    if cached and now - cached[0] < CACHE_TTL_SECONDS:
+        return cached[1]
+
+    stats: dict | None = None
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS, verify=False) as client:
+            resp = await client.get(
+                f"https://{host}:{AWG_AGENT_PORT}/v1/stats",
+                headers={"X-Auth-Token": token},
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data.get("active_tunnels"), int):
+                stats = {
+                    "active_tunnels": data["active_tunnels"],
+                    "bytes_tx": data.get("bytes_tx"),
+                    "bytes_rx": data.get("bytes_rx"),
+                }
+    except Exception:
+        pass
+
+    _STATS_CACHE[f"awg:{host}:{token}"] = (now, stats)
+    return stats
+
+
+async def update_awg_load_once() -> None:
+    """Опрос AWG-нод: пишет load% в SERVER_METRICS_STATE по ip ноды."""
+    from src.db.v3.awg.server_pojo import ServerPojo as AwgServerPojo
+    from src.db.v3.awg.agent_pojo import AgentPojo
+    from src.utils.server_metrics import SERVER_METRICS_STATE, save_state
+
+    try:
+        servers = await AwgServerPojo.find_all()
+    except Exception as e:
+        logger.error(f"AWG load: cannot list servers: {e}")
+        return
+
+    # токены агентов: ip_address записи = ip агента (ключ в agents_awg)
+    try:
+        agents = {a.ip_address: a for a in await AgentPojo.find_all() if a.token}
+    except Exception as e:
+        logger.error(f"AWG load: cannot list agents: {e}")
+        return
+
+    now = time.time()
+    changed = False
+
+    for s in servers:
+        if not s.ip_address:
+            continue
+        agent = agents.get(s.ip_address)
+        if agent is None:
+            # агента нет: по ноде нечем опросить — старую запись не трогаем
+            continue
+        host = s.ip_address
+        try:
+            stats = await get_awg_stats(host, agent.token)
+        except Exception as e:
+            logger.warning(f"AWG load FAILED: {s.ip_address} -> {e}")
+            continue
+
+        if stats is None:
+            continue
+
+        old = SERVER_METRICS_STATE.get(s.ip_address)
+        old_load = (old or {}).get("load_percent", 1)
+
+        tunnels = stats["active_tunnels"]
+        bytes_tx = stats.get("bytes_tx")
+        bytes_rx = stats.get("bytes_rx")
+
+        entry = dict(old or {})
+        entry["awg_tunnels"] = tunnels
+
+        has_bytes = isinstance(bytes_tx, (int, float)) and isinstance(bytes_rx, (int, float))
+        if has_bytes:
+            prev_tx = (old or {}).get("awg_tx_bytes")
+            prev_rx = (old or {}).get("awg_rx_bytes")
+            prev_ts = (old or {}).get("awg_timestamp", 0)
+            dt = now - prev_ts if prev_ts else 0
+
+            raw_pct = None
+            if old and prev_tx is not None and prev_rx is not None and 0 < dt < 600:
+                if bytes_tx >= prev_tx and bytes_rx >= prev_rx:
+                    tx_rate = (bytes_tx - prev_tx) / dt
+                    rx_rate = (bytes_rx - prev_rx) / dt
+                    max_rate = max(tx_rate, rx_rate)
+                    raw_pct = _clamp_load(int((max_rate / MAX_BYTES_PER_SEC) * 100))
+
+            load_pct = _ewma(raw_pct, old_load) if raw_pct is not None else old_load
+
+            entry.update({
+                "awg_timestamp": now,
+                "awg_tx_bytes": bytes_tx,
+                "awg_rx_bytes": bytes_rx,
+                "load_percent": load_pct,
+            })
+        else:
+            raw_pct = _clamp_load(int(tunnels * 100 / GW_MAX_TUNNELS))
+            entry["load_percent"] = _ewma(raw_pct, old_load)
+
+        SERVER_METRICS_STATE[s.ip_address] = entry
+        changed = True
+        logger.info(
+            f"AWG load OK: {s.ip_address} -> load={entry['load_percent']}%, "
+            f"tunnels={tunnels}, source={'bytes' if has_bytes else 'tunnels'}"
+        )
+
+    if changed:
+        save_state()
+
+
+async def update_awg_load_loop():
+    logger.info(f"Starting AWG load loop (every {AWG_POLL_INTERVAL_SECONDS} sec)...")
+    while True:
+        try:
+            await update_awg_load_once()
+        except Exception as e:
+            logger.error(f"Error in update_awg_load_loop: {e}")
+        await asyncio.sleep(AWG_POLL_INTERVAL_SECONDS)
