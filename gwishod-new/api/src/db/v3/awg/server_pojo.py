@@ -95,7 +95,10 @@ class ServerPojo:
     @staticmethod
     async def find_all() -> list["ServerPojo"]:
         collection = await ServerPojo.get_collection()
-        cursor = collection.find({})
+        # Порядок в списке серверов: чем МЕНЬШЕ priority, тем ВЫШЕ запись
+        # (AWG 3.1 = 0 идёт раньше AWG 2.0 = 1). created_at — tiebreak,
+        # чтобы записи с равным приоритетом не прыгали.
+        cursor = collection.find({}).sort([("priority", 1), ("created_at", 1)])
         servers = []
         async for doc in cursor:
             servers.append(ServerPojo.from_doc(doc))
