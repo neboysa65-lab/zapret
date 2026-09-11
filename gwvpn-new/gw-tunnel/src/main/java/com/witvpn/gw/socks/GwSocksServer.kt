@@ -541,8 +541,9 @@ class GwSocksServer(
             upstream = "127.0.0.53"
         }
         // Лимит одновременных DNS-каналов: даже без кэша исходящий поток
-        // ограничен (семантика Semaphore — остальные ждут освобождения).
-        dnsChannelCap.tryAcquire(DNS_TCP_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+        // ограничен. Блокирующее ожидание допустимо: dnsExecutor имеет всего
+        // DNS_WORKERS потоков, так что очередь ограничена сверху.
+        dnsChannelCap.acquire()
         try {
             val result = resolveDnsOverTcpInner(upstream, query)
             if (upstream == "127.0.0.53") {
