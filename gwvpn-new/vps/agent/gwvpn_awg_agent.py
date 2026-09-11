@@ -65,6 +65,12 @@ log = logging.getLogger("gwvpn-awg-agent")
 
 _provision_lock = threading.Lock()
 
+# Кэш содержимого awg0.conf: {"key": (mtime_ns, size) | None, "data": str}.
+# Сбрасывается при каждой записи файла (invalidate_conf_cache).
+_conf_cache = {"key": None, "data": ""}
+# Кэш множества занятых туннельных IP, привязан к тому же ключу файла.
+_used_ips_cache = {"key": None, "data": None}
+
 
 # ------------------------------------------------------------------------------
 # Утилиты
@@ -137,8 +143,33 @@ def run(cmd, input_text=None, timeout=20):
 
 
 def read_server_conf() -> str:
+    """Читает awg0.conf с кэшем по (mtime, size).
+
+    Файл на 16k пиров — это ~84k строк / несколько МБ. За один запрос агент
+    читает его несколько раз (peer_exists, allocate_ip, count), и каждый
+    проход стоит заметное время. Кэш отдаёт уже прочитанное содержимое,
+    пока файл не изменился.
+    """
+    try:
+        st = os.stat(SERVER_CONF_FILE)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None and _conf_cache["key"] == key:
+        return _conf_cache["data"]
     with open(SERVER_CONF_FILE, "r", encoding="utf-8", errors="replace") as f:
-        return f.read()
+        data = f.read()
+    if key is not None:
+        _conf_cache["key"] = key
+        _conf_cache["data"] = data
+    return data
+
+
+def invalidate_conf_cache():
+    _conf_cache["key"] = None
+    _conf_cache["data"] = ""
+    _used_ips_cache["key"] = None
+    _used_ips_cache["data"] = None
 
 
 def get_server_network():
@@ -153,11 +184,20 @@ def get_server_network():
 
 
 def get_used_ips() -> set:
-    """Все туннельные IP, занятые пирами (AllowedIPs x.x.x.x/32)."""
+    """Все туннельные IP, занятые пирами (AllowedIPs x.x.x.x/32).
+
+    Результат кэшируется вместе с содержимым конфига: на 16k пиров
+    построение множества — это десятки тысяч объектов на каждый вызов.
+    """
+    cached = _used_ips_cache.get("data")
+    if cached is not None and _used_ips_cache.get("key") == _conf_cache["key"]:
+        return cached
     used = set()
     conf = read_server_conf()
     for m in re.finditer(r"^AllowedIPs\s*=\s*([0-9.]+)/32", conf, re.MULTILINE):
         used.add(ipaddress.IPv4Address(m.group(1)))
+    _used_ips_cache["key"] = _conf_cache["key"]
+    _used_ips_cache["data"] = used
     return used
 
 
@@ -251,7 +291,12 @@ def render_client_config(params: dict, client_ip: str, client_privkey: str,
 
 
 def apply_config():
-    """awg syncconf без разрыва существующих сессий; fallback — рестарт сервиса."""
+    """Полный syncconf — ТОЛЬКО как аварийный fallback.
+
+    awg-quick strip переваривает весь awg0.conf (десятки тысяч пиров) и на
+    16k пиров занимает ~13 секунд. Для штатных операций используйте
+    set_peer_live()/remove_peer_live() — они обновляют ядро точечно.
+    """
     try:
         stripped = run(["awg-quick", "strip", "awg0"])
         run(["awg", "syncconf", "awg0", "/dev/stdin"], input_text=stripped)
@@ -259,6 +304,36 @@ def apply_config():
     except Exception as e:
         log.warning("syncconf failed (%s), falling back to service restart", e)
         run(["systemctl", "restart", "awg-quick@awg0"], timeout=60)
+
+
+def set_peer_live(pubkey: str, client_ip: str) -> bool:
+    """Добавляет/обновляет один пир в ядре точечно — O(1), миллисекунды.
+
+    Это ключевая замена полному apply_config(): `awg set` меняет только один
+    пир, не читая и не парся весь конфиг. Возвращает True при успехе; при
+    ошибке откатывается на полный syncconf, чтобы туннель точно поднялся.
+
+    Набор полей ровно как в серверном блоке [Peer] — AllowedIPs без
+    PersistentKeepalive (keepalive шлёт клиент, серверу он не нужен и
+    на 16k пиров был бы лишним трафиком).
+    """
+    try:
+        run(["awg", "set", "awg0", "peer", pubkey,
+             "allowed-ips", "%s/32" % client_ip], timeout=15)
+        return True
+    except Exception as e:
+        log.warning("awg set peer failed (%s) — falling back to full syncconf", e)
+        apply_config()
+        return False
+
+
+def remove_peer_live(pubkey: str) -> None:
+    """Удаляет один пир из ядра точечно."""
+    try:
+        run(["awg", "set", "awg0", "peer", pubkey, "remove"], timeout=15)
+    except Exception as e:
+        # Пира могло уже не быть в ядре — для чистки это не ошибка.
+        log.debug("awg remove peer %.12s: %s", pubkey, e)
 
 
 def peer_exists(name: str) -> bool:
@@ -315,8 +390,11 @@ def ensure_peer(user_id: str) -> dict:
                     f.write(server_conf.rstrip("\n") + "\n" + peer_block)
                 os.chmod(tmp_path, 0o600)
                 os.replace(tmp_path, SERVER_CONF_FILE)
+                invalidate_conf_cache()
 
-                apply_config()
+                # Ядро обновляем точечно (миллисекунды), а не полным
+                # syncconf по всему конфигу (13+ секунд на 16k пиров).
+                set_peer_live(pubkey, client_ip)
                 log.info("peer %s created (ip=%s) for user_id hash", name, client_ip)
                 return {"name": name, "config": base64.b64encode(client_cfg.encode()).decode(), "created": True}
             finally:
@@ -341,6 +419,31 @@ def _remove_peer_block(name: str):
         f.write(new_conf)
     os.chmod(tmp_path, 0o600)
     os.replace(tmp_path, SERVER_CONF_FILE)
+    invalidate_conf_cache()
+
+
+def _remove_peer_blocks(names: set) -> None:
+    """Удаляет сразу пачку блоков [Peer] за одну перезапись файла.
+
+    Раньше cleanup звал _remove_peer_block() в цикле — это N полных
+    перезаписей конфига (на 2773 пирах — тысячи проходов по 84k строк).
+    """
+    conf = read_server_conf()
+    blocks = re.split(r"(?=^\[)", conf, flags=re.MULTILINE)
+    kept = []
+    for b in blocks:
+        if b.startswith("[Peer]"):
+            m = re.search(r"^#_Name = (\S+)", b, re.MULTILINE)
+            if m and m.group(1) in names:
+                continue
+        kept.append(b)
+    new_conf = re.sub(r"\n{3,}", "\n\n", "".join(kept))
+    tmp_path = SERVER_CONF_FILE + ".tmp_agent"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(new_conf)
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, SERVER_CONF_FILE)
+    invalidate_conf_cache()
 
 
 def count_agent_peers() -> int:
@@ -452,8 +555,12 @@ def cleanup(days: int) -> int:
     with open(LOCK_FILE, "a") as lock_fh:
         fcntl.flock(lock_fh, fcntl.LOCK_EX)
         try:
+            # Из ядра — точечно (O(1) на пир), файл — одной перезаписью.
+            name_to_pubkey = {name: pk for pk, name in name_by_pubkey.items()}
             for name in stale:
-                _remove_peer_block(name)
+                pk = name_to_pubkey.get(name)
+                if pk:
+                    remove_peer_live(pk)
                 for path in (
                     os.path.join(AWG_DIR, "%s.conf" % name),
                     os.path.join(AWG_DIR, "%s.png" % name),
@@ -465,12 +572,12 @@ def cleanup(days: int) -> int:
                         os.remove(path)
                     except OSError:
                         pass
-                log.info("cleanup: removed stale peer %s", name)
-            apply_config()
+            _remove_peer_blocks(set(stale))
+            log.info("cleanup: removed %d stale peers", len(stale))
         finally:
             fcntl.flock(lock_fh, fcntl.LOCK_UN)
 
-    log.info("cleanup: removed %d stale peers", len(stale))
+    log.info("cleanup: done, %d peers removed", len(stale))
     return 0
 
 
