@@ -74,6 +74,26 @@ class GwSocksServer(
     private val dnsExecutor: ExecutorService = Executors.newFixedThreadPool(DNS_WORKERS) { r ->
         Thread(r, "gw-dns-tcp").apply { isDaemon = true }
     }
+
+    // ─── DNS-кэш и дедупликация ───
+    // Каждый DNS-over-TCP запрос открывал НОВЫЙ SSH-канал, а нода — новое
+    // TCP-соединение на публичный резолвер. Тысячи туннелей × повторяющиеся
+    // запросы = 13Kpps TCP SYN на 8.8.8.8:53 → OVH забанил ноду как источник
+    // DNS-флуда. Кэш (TTL из ответа) + дедупликация одинаковых запросов
+    // в полёте срезают большую часть апстрим-трафика.
+    private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, Pair<ByteArray, Long>>()
+    private val dnsInFlight = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<ByteArray?>>()
+    /** Одновременных DNS-over-TCP каналов не больше этого (остальные ждут/кэш). */
+    private val dnsChannelCap = java.util.concurrent.Semaphore(24)
+    /**
+     * Предпочитаемый апстрим: локальный резолвер САМОЙ НОДЫ (systemd-resolved
+     * на 127.0.0.53). Канал через SSH открывается к localhost ноды — наружные
+     * запросы идут обычным UDP от её же резолвера с внутренним кэшем, и OVH
+     * не видит TCP-флуда на публичные DNS. При неудаче — фолбэк на исходный
+     * хост (8.8.8.8/1.1.1.1), флаг перевыставляется периодически.
+     */
+    @Volatile private var localResolverUsable = true
+    private var localResolverLastTry = 0L
     private val connections = AtomicLong(0)
 
     /** Текущее число UDP-сессий (каждая держит поток + сокет + буфер). */
@@ -431,24 +451,115 @@ class GwSocksServer(
 
     private fun relayUdp(dgram: UdpDatagram): ByteArray? {
         if (dnsOverTcp && dgram.dstPort == DNS_PORT && dgram.payload.isNotEmpty()) {
-            // Таймаут всё равно нужен: зависший апстрим не должен держать воркер.
-            val future = dnsExecutor.submit(
-                java.util.concurrent.Callable<ByteArray?> {
-                    resolveDnsOverTcp(dgram.dstHost.hostAddress ?: "8.8.8.8", dgram.payload)
+            val dstHost = dgram.dstHost.hostAddress ?: "8.8.8.8"
+            var future: java.util.concurrent.CompletableFuture<ByteArray?>? = null
+            val key = dstHost + ":" + java.util.Arrays.hashCode(dgram.payload)
+            // Кэш: повторные запросы (основная масса DNS-трафика) не создают
+            // новых SSH-каналов и TCP-соединений на апстрим.
+            dnsCache[key]?.let { entry ->
+                if (entry.second > System.currentTimeMillis()) return entry.first
+                dnsCache.remove(key, entry)
+            }
+            // Дедупликация: идентичный запрос уже в полёте — ждём его результат,
+            // вместо второго параллельного апстрим-соединения.
+            while (true) {
+                val inFlight = dnsInFlight[key]
+                if (inFlight != null) {
+                    return try {
+                        inFlight.get(DNS_TCP_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                    } catch (e: Exception) {
+                        null
+                    }
                 }
-            )
-            return try {
-                future.get(DNS_TCP_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                val leader = java.util.concurrent.CompletableFuture<ByteArray?>()
+                if (dnsInFlight.putIfAbsent(key, leader) == null) {
+                    future = leader
+                    break
+                }
+            }
+            try {
+                val response = try {
+                    dnsExecutor.submit(
+                        java.util.concurrent.Callable<ByteArray?> {
+                            resolveDnsOverTcp(dstHost, dgram.payload)
+                        }
+                    ).get(DNS_TCP_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                } finally {
+                    dnsInFlight.remove(key)
+                }
+                if (response != null) {
+                    dnsCache[key] = response to System.currentTimeMillis() + dnsResponseTtl(response)
+                }
+                future.complete(response)
+                return response
             } catch (e: Exception) {
-                future.cancel(true)
-                Log.w(TAG, "DNS-TCP ${dgram.dstHost.hostAddress} timed out or failed: $e")
-                null
+                Log.w(TAG, "DNS-TCP $dstHost timed out or failed: $e")
+                future.complete(null)
+                return null
             }
         }
         return null
     }
 
+    /**
+     * Грубый парсер TTL из секции Answer (для кэша). Нестандартный ответ —
+     * безопасный дефолт 15 секунд.
+     */
+    private fun dnsResponseTtl(response: ByteArray): Long {
+        return try {
+            var pos = 12
+            while (response[pos].toInt() != 0) pos += 1 + response[pos]
+            pos += 5 // нулевой байт + QTYPE + QCLASS
+            var ttl = Long.MAX_VALUE
+            var answers = ((response[pos].toInt() and 0xFF) shl 8) or (response[pos + 1].toInt() and 0xFF)
+            pos += 2
+            while (answers-- > 0 && pos + 10 <= response.size) {
+                if (response[pos].toInt() and 0xC0 == 0xC0) pos += 2 else {
+                    while (response[pos].toInt() != 0) pos += 1 + response[pos]
+                    pos += 1
+                }
+                pos += 8 // TYPE + CLASS
+                val recTtl = ((response[pos].toLong() and 0xFF) shl 24) or
+                    ((response[pos + 1].toLong() and 0xFF) shl 16) or
+                    ((response[pos + 2].toLong() and 0xFF) shl 8) or
+                    (response[pos + 3].toLong() and 0xFF)
+                if (recTtl in 1 until ttl) ttl = recTtl
+                pos += 4 + (((response[pos + 8].toInt() and 0xFF) shl 8) or (response[pos + 9].toInt() and 0xFF))
+            }
+            if (ttl == Long.MAX_VALUE) 15_000L else (ttl.coerceIn(1, 300) * 1000)
+        } catch (_: Exception) {
+            15_000L
+        }
+    }
+
     private fun resolveDnsOverTcp(host: String, query: ByteArray): ByteArray? {
+        // Предпочитаем резолвер самой ноды: меньше внешних TCP и внутренний
+        // кэш systemd-resolved. Упал (не все ноды имеют локальный резолвер) —
+        // 2 минуты держим фолбэк на исходный хост.
+        var upstream = host
+        if (localResolverUsable || System.currentTimeMillis() - localResolverLastTry > 120_000) {
+            upstream = "127.0.0.53"
+        }
+        // Лимит одновременных DNS-каналов: даже без кэша исходящий поток
+        // ограничен (семантика Semaphore — остальные ждут освобождения).
+        dnsChannelCap.tryAcquire(DNS_TCP_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+        try {
+            val result = resolveDnsOverTcpInner(upstream, query)
+            if (upstream == "127.0.0.53") {
+                if (result != null) localResolverUsable = true
+                else {
+                    localResolverUsable = false
+                    localResolverLastTry = System.currentTimeMillis()
+                    Log.w(TAG, "DNS-TCP: локальный резолвер 127.0.0.53 не ответил — фолбэк на публичный при следующих запросах")
+                }
+            }
+            return result
+        } finally {
+            dnsChannelCap.release()
+        }
+    }
+
+    private fun resolveDnsOverTcpInner(host: String, query: ByteArray): ByteArray? {
         val channel = openChannel(host, DNS_PORT, countsTowardDeath = false) ?: return null
         try {
             val chOut = DataOutputStream(channel.outputStream)
