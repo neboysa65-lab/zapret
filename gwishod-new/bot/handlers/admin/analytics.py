@@ -159,7 +159,10 @@ def _vless_line(s: dict) -> str:
 def _gw_line(s: dict) -> str:
     status = "🟢" if s.get("status") else "🔴"
     premium = "⭐ " if s.get("premium") else ""
-    host = s.get("proxyHost") or s.get("ipAddress", "N/A")
+    # displayIp — реальный IP ноды: API резолвит A-запись домена «хост+1»
+    # (billing.gwapp.store -> billing1.gwapp.store). Пусто/нет записи —
+    # показываем как раньше прокси-фронт.
+    host = s.get("displayIp") or s.get("proxyHost") or s.get("ipAddress", "N/A")
     # ⚠️ = данные из heartbeat-фолбэка, а не со счётчика бриджа на ноде
     source = "" if s.get("metricsSource") == "bridge" else " ⚠️"
     return (

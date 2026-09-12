@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import socket
 import time as time_module
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl
@@ -258,6 +259,45 @@ _stats_cache: dict = {"ts": 0.0, "data": None}
 _stats_lock = asyncio.Lock()
 
 
+# ── Отображаемый IP GW-ноды для сводки бота ──────────────────────────────────
+# В экране «Сводка по серверам» бот для GW-нод показывает не прокси-IP
+# (proxy_host — это IP CDN/прокси-фронта), а A-запись служебного домена ноды:
+# ip_address = billing.gwapp.store  ->  резолвим billing1.gwapp.store.
+# Админ для каждой ноды создаёт DNS-only запись «хост + 1», в ней прописан
+# реальный IP VPS. Не резолвится / ip_address не домен — отдаём "" и бот
+# показывает как раньше (proxy_host). Фича ТОЛЬКО для визуала сводки:
+# displayIp нигде больше не используется (клиенты/SSH/маршрутизация — мимо).
+GW_DISPLAY_IP_TTL_SECONDS = 300.0
+_gw_display_ip_cache: dict[str, tuple[float, str]] = {}
+
+
+async def _gw_display_ip(ip_address: str) -> str:
+    """A-запись (IPv4) домена «<label>1.<rest>» для домена ноды, с кэшем."""
+    host = (ip_address or "").strip()
+    # не домен (чистый IP) или кривая запись — показывать нечего
+    if not host or "." not in host or host.replace(".", "").isdigit():
+        return ""
+    label, _, rest = host.partition(".")
+    display_host = f"{label}1.{rest}"
+
+    now = time_module.monotonic()
+    cached = _gw_display_ip_cache.get(display_host)
+    if cached and now - cached[0] < GW_DISPLAY_IP_TTL_SECONDS:
+        return cached[1]
+
+    ip = ""
+    try:
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(display_host, None, family=socket.AF_INET)
+        if infos:
+            ip = infos[0][4][0]
+    except Exception as e:  # NXDOMAIN и прочее — просто нет записи (пока)
+        logger.debug(f"GW display IP: {display_host} не резолвится: {e}")
+
+    _gw_display_ip_cache[display_host] = (now, ip)
+    return ip
+
+
 @router.get("/vpn/api/v1/bot/servers/stats")
 async def get_servers_stats():
     # Лёгкий кэш: при открытой админке бот дёргает эндпоинт каждые 3 сек,
@@ -389,9 +429,12 @@ async def get_servers_stats():
                 online += server_counts_by_protocol["gw"].get(s.proxy_host, 0)
                 source = "heartbeat"
             gw_online += online
+            display_ip = await _gw_display_ip(s.ip_address)
             gw_data.append({
                 "ipAddress": s.ip_address,
                 "proxyHost": s.proxy_host,
+                # реальный IP ноды: A-запись домена «хост+1» ("" — нет записи)
+                "displayIp": display_ip,
                 "name": s.name,
                 "country": s.country,
                 "countryCode": s.country_code,
