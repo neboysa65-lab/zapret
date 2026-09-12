@@ -1,0 +1,17 @@
+# Служебные папки/скрипты ZCode-сессий
+.zcode/
+.zcode_patch_*.py
+
+# Локальные бэкап-архивы
+fabapk.zip
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+
+# Go/gomobile build output
+**/tools/libwg-go/out/
+
+# Android build outputs (debug APK и промежуточные артефакты)
+gwvpn-new/app/debug/
