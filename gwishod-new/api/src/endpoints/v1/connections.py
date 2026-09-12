@@ -414,7 +414,11 @@ async def get_servers_stats():
         from src.utils.gw_metrics import get_gw_tunnel_count
 
         gw_data = []
-        gw_online = 0
+        # Несколько записей БД могут указывать на ОДНУ ноду (один реальный IP,
+        # один бридж с одним счётчиком). В суммы (gwOnline / totalOnline)
+        # ноду считаем ОДИН раз, иначе онлайн задваивается. Строки списка
+        # остаются по каждой записи как раньше.
+        node_online: dict[str, dict] = {}
         for s in gw_servers:
             # ip_address — домен ноды: Cloudflare роутит /gw-stats по SNI.
             # proxy_host — CF-IP: без Host-заголовка бридж не отвечает (403).
@@ -428,8 +432,18 @@ async def get_servers_stats():
                 online = server_counts_by_protocol["gw"].get(s.ip_address, 0)
                 online += server_counts_by_protocol["gw"].get(s.proxy_host, 0)
                 source = "heartbeat"
-            gw_online += online
             display_ip = await _gw_display_ip(s.ip_address)
+            # ключ уникальности ноды — её реальный IP (A-запись «хост+1»)
+            st = node_online.setdefault(
+                display_ip or s.ip_address or s.proxy_host,
+                {"bridge": None, "heartbeat": 0},
+            )
+            if source == "bridge":
+                # у дублей счётчик один и тот же, берём max (дрожит на единицы)
+                st["bridge"] = max(st["bridge"] or 0, online)
+            else:
+                # хартбиты у дублей — дополнение друг друга, складываем
+                st["heartbeat"] += online
             gw_data.append({
                 "ipAddress": s.ip_address,
                 "proxyHost": s.proxy_host,
@@ -443,6 +457,10 @@ async def get_servers_stats():
                 "onlineUsers": online,
                 "metricsSource": source,
             })
+
+        gw_online = 0
+        for st in node_online.values():
+            gw_online += st["bridge"] if st["bridge"] is not None else st["heartbeat"]
 
         total_online = ikev2_online + vless_online + awg_online + gw_online
 
