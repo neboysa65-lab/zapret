@@ -24,6 +24,7 @@ import com.witvpn.ikev2.presentation.utils.SharePrefs
 import com.witvpn.ikev2.presentation.utils.getStringPref
 import com.witvpn.ikev2.presentation.utils.parseApiDate
 import com.witvpn.ikev2.presentation.utils.putStringPref
+import com.witvpn.ikev2.presentation.utils.showToast
 import dagger.hilt.android.AndroidEntryPoint
 import timber.log.Timber
 
@@ -229,7 +230,9 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                                 ConnectionTracker.reportDisconnect(ctx, userId)
                             }
                             if (isGwMode && !GwManager.lastError.isNullOrBlank()) {
-                                Toast.makeText(context, GwManager.lastError, Toast.LENGTH_LONG).show()
+                                // Через showToast: сырой текст ошибки туннеля может
+                                // содержать IP ноды — наружу идёт зачищенный текст.
+                                context?.showToast(GwManager.lastError, Toast.LENGTH_LONG)
                             }
                         }
                         else -> {}

@@ -304,6 +304,7 @@
     <string name="current_plan_free">Current plan - free</string>
     <string name="loading_dots">Loading…</string>
     <string name="error_loading">Error loading</string>
+    <string name="error_no_internet">No internet connection. Check your network and try again.</string>
     <string name="select_vless_server">Select Vless Server</string>
 
     

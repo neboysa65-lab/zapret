@@ -92,6 +92,7 @@
     <string name="current_plan_free">Текущий план - бесплатный</string>
     <string name="loading_dots">Загрузка…</string>
     <string name="error_loading">Ошибка загрузки</string>
+    <string name="error_no_internet">Нет подключения к интернету. Проверьте сеть и попробуйте ещё раз.</string>
     <string name="select_vless_server">Выберите VLESS сервер</string>
     <string name="private_policy_description">
         Политика конфиденциальности.

@@ -13,6 +13,7 @@ import android.widget.EditText
 import android.widget.Toast
 import androidx.annotation.ColorRes
 import androidx.core.content.ContextCompat
+import com.witvpn.ikev2.R
 import java.io.BufferedReader
 import kotlin.math.roundToInt
 
@@ -87,13 +88,21 @@ fun Activity?.hideKeyboardWhenTouchOutside(view: View?, callback: (() -> Unit)? 
     }
 }
 
-fun Context?.showToast(message: String?) {
+fun Context?.showToast(message: String?, duration: Int = Toast.LENGTH_SHORT) {
     // Android 14+: Toast.makeText(ctx, null, ...) создаёт тост без текста и
     // view — show() кидает IllegalStateException «You must either set a text
     // or a view» и процесс падает (крэш-луп на старте, когда обработчик
     // ошибки логина зовёт showToast(null)). Null/пустое — просто не показываем.
     if (this == null || message.isNullOrBlank()) return
-    runCatching { Toast.makeText(this, message, Toast.LENGTH_SHORT).show() }
+    // Сетевые исключения (нет интернета, таймаут) показываем дружелюбной фразой,
+    // в остальных текстах вычищаем URL/домены/IP — иначе сырой текст исключения
+    // светит пользователю адрес API-сервера или IP ноды.
+    val safe = if (ErrorSanitizer.isNetworkError(message)) {
+        getString(R.string.error_no_internet)
+    } else {
+        ErrorSanitizer.stripEndpoints(message)
+    }
+    runCatching { Toast.makeText(this, safe, duration).show() }
 }
 
 fun Context?.readAsset(fileName: String) = this
