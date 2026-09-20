@@ -9,17 +9,23 @@ import 'package:vpn_subscription_app/l10n/generated/app_localizations.dart';
 // Цвета тиров нагрузки
 Color _tierColor(ServerLoadTier tier) {
   switch (tier) {
-    case ServerLoadTier.low:    return const Color(0xFFA3FF00); // green
-    case ServerLoadTier.medium: return const Color(0xFFFFBF00); // amber
-    case ServerLoadTier.high:   return const Color(0xFFFF3B30); // red
+    case ServerLoadTier.low:
+      return const Color(0xFFA3FF00); // green
+    case ServerLoadTier.medium:
+      return const Color(0xFFFFBF00); // amber
+    case ServerLoadTier.high:
+      return const Color(0xFFFF3B30); // red
   }
 }
 
 String _tierLabel(ServerLoadTier tier) {
   switch (tier) {
-    case ServerLoadTier.low:    return 'Низкая нагрузка';
-    case ServerLoadTier.medium: return 'Средняя нагрузка';
-    case ServerLoadTier.high:   return 'Высокая нагрузка';
+    case ServerLoadTier.low:
+      return 'Низкая нагрузка';
+    case ServerLoadTier.medium:
+      return 'Средняя нагрузка';
+    case ServerLoadTier.high:
+      return 'Высокая нагрузка';
   }
 }
 
@@ -94,15 +100,19 @@ class _ServerListScreenState extends State<ServerListScreen> {
                       size: 24,
                     ),
                     const SizedBox(width: 12),
-                    Text(
-                      l10n.selectLocation,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
+                    Expanded(
+                      child: Text(
+                        l10n.selectLocation,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
-                    const Spacer(),
+                    const SizedBox(width: 8),
                     Text(
                       l10n.serversCount(provider.servers.length),
                       style: TextStyle(color: Colors.grey[500], fontSize: 13),
@@ -285,19 +295,41 @@ class _ServerListScreenState extends State<ServerListScreen> {
     AppProvider provider,
   ) {
     // Use clean country name, stripping flag emoji (already shown in icon)
-    String displayName = server.country != 'Unknown'
+    String displayName = server.isAwg
+        ? server.cleanName
+        : server.country != 'Unknown'
         ? server.country
         : server.cleanName
-            .replaceAll(
-              RegExp(r'[\u{1F1E6}-\u{1F1FF}][\u{1F1E6}-\u{1F1FF}]', unicode: true),
-              '',
-            )
-            .trim();
+              .replaceAll(
+                RegExp(
+                  r'[\u{1F1E6}-\u{1F1FF}][\u{1F1E6}-\u{1F1FF}]',
+                  unicode: true,
+                ),
+                '',
+              )
+              .trim();
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: () {
+          if (!server.canConnect) {
+            final ru = Localizations.localeOf(context).languageCode == 'ru';
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  server.locked
+                      ? (ru
+                            ? 'Для этого сервера нужен Premium'
+                            : 'Premium is required')
+                      : (ru
+                            ? 'Сервер временно недоступен'
+                            : 'Server temporarily unavailable'),
+                ),
+              ),
+            );
+            return;
+          }
           provider.selectServer(server);
           Navigator.of(context).pop();
         },
@@ -334,13 +366,34 @@ class _ServerListScreenState extends State<ServerListScreen> {
 
               // Server Info
               Expanded(
-                child: Text(
-                  displayName,
-                  style: TextStyle(
-                    color: isSelected ? AppColors.primaryGreen : Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 15,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      displayName,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: !server.canConnect
+                            ? Colors.grey
+                            : isSelected
+                            ? AppColors.primaryGreen
+                            : Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${server.protocolLabel}${server.premium ? ' · Premium' : ''}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: server.isAwg
+                            ? AppColors.primaryGreen
+                            : Colors.grey,
+                      ),
+                    ),
+                  ],
                 ),
               ),
 
@@ -353,11 +406,23 @@ class _ServerListScreenState extends State<ServerListScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  _buildSignalBars(server.ping),
+                  if (server.isAwg)
+                    Text(
+                      'UDP',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                    )
+                  else
+                    _buildSignalBars(server.ping),
                   const SizedBox(width: 12),
-                  _buildLoadDot(provider, server),
+                  if (!server.isAwg) _buildLoadDot(provider, server),
                   const SizedBox(width: 8),
-                  if (isSelected)
+                  if (!server.canConnect)
+                    Icon(
+                      server.locked ? Icons.lock_outline : Icons.cloud_off,
+                      color: Colors.grey,
+                      size: 20,
+                    )
+                  else if (isSelected)
                     Container(
                       width: 24,
                       height: 24,
@@ -448,7 +513,9 @@ class _ServerListScreenState extends State<ServerListScreen> {
         border: Border.all(color: Colors.white12, width: 1),
       ),
       textStyle: TextStyle(
-        color: ping > 0 ? color : Colors.grey, // Цвет текста зависит от качества пинга
+        color: ping > 0
+            ? color
+            : Colors.grey, // Цвет текста зависит от качества пинга
         fontWeight: FontWeight.bold,
         fontSize: 13,
       ),
@@ -492,11 +559,14 @@ class _ServerListScreenState extends State<ServerListScreen> {
           shape: BoxShape.circle,
           color: color,
           boxShadow: [
-            BoxShadow(color: color.withValues(alpha: 0.6), blurRadius: 6, spreadRadius: 1),
+            BoxShadow(
+              color: color.withValues(alpha: 0.6),
+              blurRadius: 6,
+              spreadRadius: 1,
+            ),
           ],
         ),
       ),
     );
   }
-
 }

@@ -32,7 +32,7 @@ android {
         applicationId = "app.vless.vpn"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion // Lowered for better compatibility
+        minSdk = maxOf(24, flutter.minSdkVersion)
         targetSdk = 35
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -128,10 +128,11 @@ dependencies {
     // Separate Hysteria2 engine (ported from gwapk). VLESS keeps using
     // flutter_v2ray_plus; only Hysteria2 servers are routed through this module.
     implementation(project(":hysteria2_engine"))
-
     // VLEE engine (SSH-tunnel protocol, 1:1 port of gwvpn-new/gw-tunnel).
     // Its libhev-socks5-tunnel.so + TProxyService come from hysteria2_engine.
     implementation(project(":vlee_engine"))
+    implementation(project(":amneziawg-tunnel"))
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }
 
 flutter {

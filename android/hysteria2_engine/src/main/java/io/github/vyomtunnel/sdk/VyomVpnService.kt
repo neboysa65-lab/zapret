@@ -21,6 +21,7 @@ import java.io.File
 import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.locks.ReentrantLock
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 class VyomVpnService : TProxyService() {
@@ -52,6 +53,8 @@ class VyomVpnService : TProxyService() {
     private var lastTotalRx: Long = 0
     private var noDataCount = 0
     private val tunnelLock = ReentrantLock()
+    private val generation = AtomicInteger()
+    @Volatile private var stopping = false
 
     private val connectivityManager by lazy {
         getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -76,9 +79,15 @@ class VyomVpnService : TProxyService() {
 
             Log.i(TAG, "Network changed → restarting Xray")
 
-            NativeEngine.stopXray()
-            if (NativeEngine.isLoaded) {
-                NativeEngine.startXray(config, filesDir.absolutePath)
+            tunnelLock.lock()
+            try {
+                if (stopping) return
+                NativeEngine.stopXray()
+                if (NativeEngine.isLoaded) {
+                    NativeEngine.startXray(config, filesDir.absolutePath)
+                }
+            } finally {
+                tunnelLock.unlock()
             }
         }
 
@@ -128,12 +137,17 @@ class VyomVpnService : TProxyService() {
         excludedAppsOverride: Set<String>? = null,
         allowedAppsOverride: Set<String>? = null
     ) {
+        val ticket = generation.incrementAndGet()
+        stopping = false
+        VyomVpnManager.setVpnShouldRun(this, true)
         val assetPath = filesDir.absolutePath
         Log.i("VyomVPN", "=== START VPN ===")
         notifyStatus(VyomState.CONNECTING)
 
         thread(name = "VyomStartup") {
+            tunnelLock.lock()
             try {
+                if (ticket != generation.get()) return@thread
                 if (!NativeEngine.isLoaded) {
                     Log.e("VyomVPN", "Native libraries not loaded, cannot start VPN")
                     notifyStatus(VyomState.ERROR)
@@ -143,10 +157,12 @@ class VyomVpnService : TProxyService() {
                 NativeEngine.stopXray()
                 try { TProxyStopService() } catch (_: UnsatisfiedLinkError) {}
                 Thread.sleep(300)
+                if (ticket != generation.get()) return@thread
 
                 val result = NativeEngine.startXray(xrayConfig, assetPath)
                 Log.i("VyomVPN", "Xray started: $result")
                 Thread.sleep(1000)
+                if (ticket != generation.get()) return@thread
 
                 val builder = Builder()
                     .setSession("VlessVPN")
@@ -202,6 +218,7 @@ class VyomVpnService : TProxyService() {
                     builder.setBlocking(true)
                 }
 
+                if (ticket != generation.get()) return@thread
                 tunInterface = builder.establish()
                 val fd = tunInterface?.fd ?: throw IllegalStateException("TUN failed")
                 Log.i("VyomVPN", "TUN OK FD=$fd")
@@ -224,6 +241,7 @@ class VyomVpnService : TProxyService() {
 
                 TProxyStartService(tunFile.absolutePath, fd)
 
+                if (ticket != generation.get()) return@thread
                 startStatsTicker()
                 startHealthGuard() // <-- Enable health check
                 notifyStatus(VyomState.CONNECTED)
@@ -231,7 +249,9 @@ class VyomVpnService : TProxyService() {
 
             } catch (e: Exception) {
                 Log.e("VyomVPN", "VPN START FAILED", e)
-                notifyStatus(VyomState.ERROR)
+                if (ticket == generation.get()) notifyStatus(VyomState.ERROR)
+            } finally {
+                tunnelLock.unlock()
             }
         }
     }
@@ -257,6 +277,9 @@ class VyomVpnService : TProxyService() {
     }
 
     private fun stopVpn() {
+        val ticket = generation.incrementAndGet()
+        stopping = true
+        VyomVpnManager.setVpnShouldRun(this, false)
         notifyStatus(VyomState.STOPPING)
         healthCheckTimer?.cancel()
 
@@ -266,6 +289,7 @@ class VyomVpnService : TProxyService() {
 
                 tunnelLock.lock()
                 try {
+                    if (ticket != generation.get()) return@thread
                     try { TProxyStopService() } catch (_: UnsatisfiedLinkError) {}
                     NativeEngine.stopXray()
                     tunInterface?.close()
@@ -376,6 +400,9 @@ class VyomVpnService : TProxyService() {
     }
 
     override fun onDestroy() {
+        generation.incrementAndGet()
+        stopping = true
+        tunnelLock.lock()
         try {
             stopStatsTicker()
             connectivityManager.unregisterNetworkCallback(networkCallback)
@@ -383,7 +410,10 @@ class VyomVpnService : TProxyService() {
             try { TProxyStopService() } catch (_: UnsatisfiedLinkError) {}
             tunInterface?.close()
             tunInterface = null
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        } finally {
+            tunnelLock.unlock()
+        }
         super.onDestroy()
     }
 
@@ -414,6 +444,7 @@ class VyomVpnService : TProxyService() {
             override fun run() {
                 if (!tunnelLock.tryLock()) return@run
                 try {
+                    if (stopping) return@run
                     val stats = this@VyomVpnService.TProxyGetStats()
                     if (stats.size >= 4) {
                         val currentTotalRx = stats[3]

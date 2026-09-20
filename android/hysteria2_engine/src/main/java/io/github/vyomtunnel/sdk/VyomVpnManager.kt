@@ -31,6 +31,8 @@ object VyomVpnManager {
     private const val KEY_ALLOWED_APPS = "allowed_apps_list"
 
     private var isInitialized = false
+    private var permissionGeneration = 0
+    private var pendingPermissionConfig: String? = null
     private var internalReceiver: BroadcastReceiver? = null
     private var vpnListener: VyomListener? = null
     private var notificationConfig = VyomNotificationConfig()
@@ -100,13 +102,15 @@ object VyomVpnManager {
         }
     }
 
-    fun connectWithPermission(activity: Activity, input: String) {
+    fun connectWithPermission(activity: Activity, input: String): Boolean {
+        val ticket = ++permissionGeneration
+        pendingPermissionConfig = null
         val finalConfig = try {
             if (input.trim().startsWith("{")) input
             else LinkParser.parse(input)
         } catch (e: Exception) {
             Toast.makeText(activity, "Invalid link or JSON", Toast.LENGTH_LONG).show()
-            return
+            return false
         }
 
         // NOTE: validateConfig is deliberately NOT called here. It would load
@@ -116,13 +120,26 @@ object VyomVpnManager {
 
         val intent = VpnService.prepare(activity)
         if (intent != null) {
-            saveConfig(activity, finalConfig)
+            pendingPermissionConfig = finalConfig
             activity.startActivity(
                 Intent(activity, VyomPermissionActivity::class.java)
+                    .putExtra("permissionGeneration", ticket)
             )
         } else {
             start(activity, finalConfig)
         }
+        return true
+    }
+
+    fun completePermission(context: Context, ticket: Int, granted: Boolean) {
+        if (ticket != permissionGeneration) return
+        val config = pendingPermissionConfig ?: return
+        pendingPermissionConfig = null
+        if (granted) start(context, config)
+        else context.sendBroadcast(Intent(ACTION_VPN_STATE).apply {
+            setPackage(context.packageName)
+            putExtra("STATE", VyomState.DISCONNECTED.name)
+        })
     }
 
     fun start(context: Context, configJson: String) {
@@ -157,6 +174,8 @@ object VyomVpnManager {
     }
 
     fun stop(context: Context) {
+        permissionGeneration++
+        pendingPermissionConfig = null
         setVpnShouldRun(context, false)
         val intent = Intent(context, VyomVpnService::class.java).apply {
             action = "STOP_VPN"
@@ -304,7 +323,7 @@ object VyomVpnManager {
             .putString(KEY_LAST_CONFIG, config).apply()
     }
 
-    private fun setVpnShouldRun(context: Context, shouldRun: Boolean) {
+    internal fun setVpnShouldRun(context: Context, shouldRun: Boolean) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_VPN_ALIVE, shouldRun).apply()
     }

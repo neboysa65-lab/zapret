@@ -7,12 +7,13 @@ import 'hysteria_engine_service.dart';
 import 'vlee_engine_service.dart';
 import 'vless_link_config_builder.dart';
 import 'xray_config_normalizer.dart';
+import 'awg_engine_service.dart';
 
 /// VPN connection status
 enum VpnStatus { disconnected, connecting, connected, disconnecting, error }
 
 /// Which engine currently owns the tunnel.
-enum ActiveEngine { none, v2ray, hysteria2, vlee }
+enum ActiveEngine { none, v2ray, hysteria2, vlee, awg }
 
 /// Service for VPN connection management.
 ///
@@ -21,9 +22,15 @@ enum ActiveEngine { none, v2ray, hysteria2, vlee }
 /// (see HysteriaEngineService), ported from the gwapk project. VLEE servers
 /// go to the VLEE engine (see VleeEngineService), ported from gwvpn-new.
 class VpnService {
-  late FlutterV2ray _flutterV2ray;
-  final HysteriaEngineService _hysteriaEngine = HysteriaEngineService();
-  final VleeEngineService _vleeEngine = VleeEngineService();
+  final VleeEngineService _vleeEngine;
+  final FlutterV2ray _flutterV2ray;
+  final HysteriaEngineService _hysteriaEngine;
+  final AwgEngineService _awgEngine;
+  int _connectAttempt = 0;
+  bool _stopping = false;
+  bool _allowRestore = true;
+  Future<bool>? _pendingStop;
+  StreamSubscription<VlessStatus>? _awgStatusSubscription;
   ActiveEngine _activeEngine = ActiveEngine.none;
   VpnStatus _status = VpnStatus.disconnected;
   VlessConfig? _currentConfig;
@@ -53,9 +60,15 @@ class VpnService {
   /// Callback for status changes (kept for compatibility)
   Function(VpnStatus)? onStatusChanged;
 
-  VpnService() {
-    _flutterV2ray = FlutterV2ray();
-  }
+  VpnService({
+    FlutterV2ray? v2ray,
+    AwgEngineService? awgEngine,
+    HysteriaEngineService? hysteriaEngine,
+    VleeEngineService? vleeEngine,
+  }) : _flutterV2ray = v2ray ?? FlutterV2ray(),
+       _hysteriaEngine = hysteriaEngine ?? HysteriaEngineService(),
+       _vleeEngine = vleeEngine ?? VleeEngineService(),
+       _awgEngine = awgEngine ?? AwgEngineService();
 
   /// Initialize VPN engine
   Future<bool> initialize() async {
@@ -67,20 +80,37 @@ class VpnService {
 
       // Listen to the status stream from flutter_v2ray_plus
       _statusSubscription = _flutterV2ray.onStatusChanged.listen((vlessStatus) {
-        // Ignore v2ray engine chatter while a dedicated engine owns the tunnel.
-        if (_activeEngine == ActiveEngine.hysteria2 ||
-            _activeEngine == ActiveEngine.vlee) {
-          return;
-        }
+        // Ignore events from an engine that no longer owns the tunnel.
+        if (_stopping) return;
+        if (_activeEngine == ActiveEngine.none &&
+            _allowRestore &&
+            vlessStatus.state == 'CONNECTED')
+          _activeEngine = ActiveEngine.v2ray;
+        if (_activeEngine != ActiveEngine.v2ray) return;
         _handleStatusChange(vlessStatus);
       });
 
       // Dedicated Hysteria2 engine: init + state / traffic streams.
       await _hysteriaEngine.initialize();
-      _hysteriaStatusSubscription =
-          _hysteriaEngine.statusStream.listen(_handleHysteriaStateChange);
-      _hysteriaTrafficSubscription =
-          _hysteriaEngine.trafficStream.listen(_handleHysteriaTraffic);
+      _hysteriaStatusSubscription = _hysteriaEngine.statusStream.listen(
+        _handleHysteriaStateChange,
+      );
+      _hysteriaTrafficSubscription = _hysteriaEngine.trafficStream.listen(
+        _handleHysteriaTraffic,
+      );
+
+      _awgStatusSubscription = _awgEngine.statusStream.listen((event) {
+        if (_stopping) return;
+        if (_allowRestore &&
+            _activeEngine == ActiveEngine.none &&
+            event.state == 'CONNECTED') {
+          _activeEngine = ActiveEngine.awg;
+        }
+        if (_activeEngine != ActiveEngine.awg) return;
+        if (event.state == 'ERROR') _errorMessage = 'Ошибка AWG подключения';
+        _handleStatusChange(event);
+      });
+      await _awgEngine.initialize();
 
       // VLEE engine: state / traffic streams (init не нужен).
       _vleeStatusSubscription =
@@ -98,31 +128,61 @@ class VpnService {
   /// Connect to VPN
   /// [blockedApps] — optional list of package names to exclude from VPN tunnel (split tunneling)
   Future<bool> connect(VlessConfig config, {List<String>? blockedApps}) async {
+    final attemptId = ++_connectAttempt;
+    _allowRestore = false;
     try {
-      if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-        await disconnect();
+      final pendingStop = _pendingStop;
+      if (pendingStop != null && !await pendingStop) return false;
+      if (attemptId != _connectAttempt) return false;
+      if (!config.canConnect) {
+        _errorMessage = config.locked
+            ? 'Для сервера нужен Premium'
+            : 'Сервер временно недоступен';
+        return false;
+      }
+      if (_status == VpnStatus.connected ||
+          _status == VpnStatus.connecting ||
+          (_status == VpnStatus.error && _activeEngine != ActiveEngine.none)) {
+        if (!await _disconnectEngine()) return false;
         // Give the OS time to fully tear down the previous foreground service
         // before starting a new one. Otherwise Android 12+ throws
         // ForegroundServiceDidNotStartInTimeException.
         await Future.delayed(const Duration(milliseconds: 600));
       }
 
+      if (attemptId != _connectAttempt) return false;
+
       _updateStatus(VpnStatus.connecting);
       _errorMessage = null;
       _currentConfig = config;
+
+      if (config.isAwg) {
+        _activeEngine = ActiveEngine.awg;
+        final started = await _awgEngine.connect(
+          config,
+          blockedApps: blockedApps,
+        );
+        if (attemptId != _connectAttempt) return false;
+        if (!started) {
+          _errorMessage = 'AWG: подключение отменено или нет разрешения VPN';
+          _updateStatus(VpnStatus.disconnected);
+        }
+        return started;
+      }
 
       // --- Hysteria2: handled by the dedicated ported engine, never by
       // flutter_v2ray_plus (its stock Xray core has no hysteria outbound). ---
       if (config.isHysteria2) {
         _activeEngine = ActiveEngine.hysteria2;
-        final url = config.originalUrl.isNotEmpty &&
+        final url =
+            config.originalUrl.isNotEmpty &&
                 (config.originalUrl.startsWith('hysteria2://') ||
                     config.originalUrl.startsWith('hy2://'))
             ? config.originalUrl
             : config.hysteria2Url;
-        print('Hysteria2 URL: $url');
 
         final started = await _hysteriaEngine.connect(url);
+        if (attemptId != _connectAttempt) return false;
         if (!started) {
           _errorMessage = 'Не удалось запустить Hysteria2 движок.';
           _activeEngine = ActiveEngine.none;
@@ -146,6 +206,7 @@ class VpnService {
           json,
           excludedApps: blockedApps ?? const [],
         );
+        if (attemptId != _connectAttempt) return false;
         if (!started) {
           _errorMessage = 'Не удалось запустить VLEE движок.';
           _activeEngine = ActiveEngine.none;
@@ -166,8 +227,9 @@ class VpnService {
         // up — a panel config that ships socks on 10808 / http on 10809 would
         // otherwise leave tun2socks talking to a dead port while colliding with
         // the injected API inbound. See XrayConfigNormalizer.
-        jsonConfig =
-            XrayConfigNormalizer.normalizeJsonString(config.rawJsonConfig!);
+        jsonConfig = XrayConfigNormalizer.normalizeJsonString(
+          config.rawJsonConfig!,
+        );
         print('Using raw JSON config, length: ${jsonConfig.length}');
       } else {
         // VLESS-over-TCP links (all REALITY/Vision servers) get the full config
@@ -178,7 +240,9 @@ class VpnService {
         final built = VlessLinkConfigBuilder.build(config);
         if (built != null) {
           jsonConfig = built;
-          print('Xray JSON built from link fields, length: ${jsonConfig.length}');
+          print(
+            'Xray JSON built from link fields, length: ${jsonConfig.length}',
+          );
         } else {
           // Non-TCP transports (ws/grpc/xhttp) and Shadowsocks: the plugin's
           // builder still owns the transport tables for these.
@@ -191,8 +255,6 @@ class VpnService {
           if (vlessUrl.isEmpty) {
             throw Exception("Invalid config: no VLESS URL");
           }
-
-          print('VLESS URL: $vlessUrl');
 
           // Parse VLESS URL to FlutterV2RayURL object
           FlutterV2RayURL v2rayUrl = FlutterV2ray.parseFromURL(vlessUrl);
@@ -208,11 +270,13 @@ class VpnService {
 
       // Request VPN permission and start
       if (await _flutterV2ray.requestPermission()) {
+        if (attemptId != _connectAttempt) return false;
         if (blockedApps != null && blockedApps.isNotEmpty) {
           print('Split Tunneling: ${blockedApps.length} apps blocked from VPN');
         }
         // Retry up to 2 times if foreground service fails to start in time
         for (int attempt = 1; attempt <= 2; attempt++) {
+          if (attemptId != _connectAttempt) return false;
           try {
             await _flutterV2ray.startVless(
               remark: config.cleanName,
@@ -220,14 +284,16 @@ class VpnService {
               blockedApps: blockedApps,
               proxyOnly: false,
             );
-            return true;
+            return attemptId == _connectAttempt;
           } on PlatformException catch (e) {
+            if (attemptId != _connectAttempt) return false;
             print('startVless attempt $attempt failed: ${e.code} ${e.message}');
             if (attempt < 2) {
               // Wait long enough for prior foreground service to die before retrying.
               await Future.delayed(const Duration(milliseconds: 1500));
             } else {
-              _errorMessage = 'Не удалось запустить VPN сервис. Попробуйте ещё раз.';
+              _errorMessage =
+                  'Не удалось запустить VPN сервис. Попробуйте ещё раз.';
               _updateStatus(VpnStatus.disconnected);
               return false;
             }
@@ -235,11 +301,13 @@ class VpnService {
         }
         return false;
       } else {
+        if (attemptId != _connectAttempt) return false;
         _errorMessage = "Permission denied";
         _updateStatus(VpnStatus.disconnected);
         return false;
       }
     } catch (e) {
+      if (attemptId != _connectAttempt) return false;
       _errorMessage = e.toString();
       print('Connection error: $e');
       _updateStatus(VpnStatus.disconnected);
@@ -249,23 +317,40 @@ class VpnService {
 
   /// Disconnect from VPN
   Future<bool> disconnect() async {
+    _connectAttempt++;
+    _allowRestore = false;
+    return _disconnectEngine();
+  }
+
+  Future<bool> _disconnectEngine() {
+    return _pendingStop ??= _stopEngine().whenComplete(
+      () => _pendingStop = null,
+    );
+  }
+
+  Future<bool> _stopEngine() async {
+    _stopping = true;
     try {
       _updateStatus(VpnStatus.disconnecting);
-      if (_activeEngine == ActiveEngine.hysteria2) {
+      if (_activeEngine == ActiveEngine.awg) {
+        await _awgEngine.disconnect();
+      } else if (_activeEngine == ActiveEngine.hysteria2) {
         await _hysteriaEngine.disconnect();
       } else if (_activeEngine == ActiveEngine.vlee) {
         await _vleeEngine.disconnect();
-      } else {
+      } else if (_activeEngine == ActiveEngine.v2ray) {
         await _flutterV2ray.stopVless();
       }
       _currentConfig = null;
-      // Status will be updated via the engine status stream
+      _activeEngine = ActiveEngine.none;
+      _updateStatus(VpnStatus.disconnected);
       return true;
     } catch (e) {
       _errorMessage = e.toString();
-      _activeEngine = ActiveEngine.none;
-      _updateStatus(VpnStatus.disconnected);
+      _updateStatus(VpnStatus.error);
       return false;
+    } finally {
+      _stopping = false;
     }
   }
 
@@ -282,8 +367,9 @@ class VpnService {
     if (config.sid.isNotEmpty) params['sid'] = config.sid;
     if (config.spx.isNotEmpty) params['spx'] = config.spx;
 
-    final queryString =
-        params.entries.map((e) => '${e.key}=${e.value}').join('&');
+    final queryString = params.entries
+        .map((e) => '${e.key}=${e.value}')
+        .join('&');
 
     final fragment = Uri.encodeComponent(config.serverName);
 
@@ -293,10 +379,8 @@ class VpnService {
   /// Measure server ping/delay
   Future<int?> pingServer(VlessConfig config) async {
     try {
-      // Hysteria2/VLEE servers are not measurable through flutter_v2ray_plus.
-      // The server list already measures them with a raw TCP socket in
-      // AppProvider.loadServers().
-      if (config.isHysteria2 || config.isVlee) return null;
+      // Dedicated engines cannot be measured through Xray.
+      if (config.isHysteria2 || config.isAwg || config.isVlee) return null;
 
       // If connected to this server, get connected delay
       if (_status == VpnStatus.connected && _currentConfig?.id == config.id) {
@@ -305,8 +389,9 @@ class VpnService {
 
       String jsonConfig;
       if (config.hasJsonConfig) {
-        jsonConfig =
-            XrayConfigNormalizer.normalizeJsonString(config.rawJsonConfig!);
+        jsonConfig = XrayConfigNormalizer.normalizeJsonString(
+          config.rawJsonConfig!,
+        );
       } else {
         final built = VlessLinkConfigBuilder.build(config);
         if (built != null) {
@@ -331,6 +416,11 @@ class VpnService {
 
   /// Handle state changes from the dedicated Hysteria2 engine
   void _handleHysteriaStateChange(HysteriaState state) {
+    if (_stopping) return;
+    if (_allowRestore &&
+        _activeEngine == ActiveEngine.none &&
+        state == HysteriaState.connected)
+      _activeEngine = ActiveEngine.hysteria2;
     if (_activeEngine != ActiveEngine.hysteria2) return;
 
     switch (state) {
@@ -383,17 +473,25 @@ class VpnService {
     _lastHysteriaTraffic = traffic;
     _lastHysteriaTrafficAt = now;
 
-    _vlessStatusController.add(VlessStatus(
-      state: 'CONNECTED',
-      uploadSpeed: upSpeed,
-      downloadSpeed: downSpeed,
-      upload: traffic.uploadTotal,
-      download: traffic.downloadTotal,
-    ));
+    _vlessStatusController.add(
+      VlessStatus(
+        state: 'CONNECTED',
+        uploadSpeed: upSpeed,
+        downloadSpeed: downSpeed,
+        upload: traffic.uploadTotal,
+        download: traffic.downloadTotal,
+      ),
+    );
   }
 
   /// Handle state changes from the VLEE engine.
   void _handleVleeStateChange(VleeState state) {
+    if (_stopping) return;
+    if (_allowRestore &&
+        _activeEngine == ActiveEngine.none &&
+        state == VleeState.connected) {
+      _activeEngine = ActiveEngine.vlee;
+    }
     if (_activeEngine != ActiveEngine.vlee) return;
 
     switch (state) {
@@ -481,11 +579,14 @@ class VpnService {
 
   /// Clean up resources
   void dispose() {
+    _connectAttempt++;
     _statusSubscription?.cancel();
     _hysteriaStatusSubscription?.cancel();
     _hysteriaTrafficSubscription?.cancel();
     _vleeStatusSubscription?.cancel();
     _vleeTrafficSubscription?.cancel();
+    _awgStatusSubscription?.cancel();
+    _awgEngine.dispose();
     _statusController.close();
     _vlessStatusController.close();
   }

@@ -34,6 +34,22 @@ class VlessConfig {
   final String obfs; // e.g. 'salamander' (empty = none)
   final String obfsPassword;
   final bool allowInsecure;
+  final String awgConfig;
+  final String awgVersion;
+  final bool premium;
+  final bool locked;
+  final bool available;
+  final bool recommend;
+  final int priority;
+
+  bool get isAwg => protocol == 'awg';
+  bool get canConnect =>
+      !locked && available && (!isAwg || awgConfig.isNotEmpty);
+  String get protocolLabel => isAwg
+      ? (awgVersion.isEmpty ? 'AWG' : 'AWG $awgVersion')
+      : isHysteria2
+      ? 'Hysteria2'
+      : protocol.toUpperCase();
 
   bool get hasJsonConfig => rawJsonConfig != null && rawJsonConfig!.isNotEmpty;
 
@@ -100,7 +116,90 @@ class VlessConfig {
     this.obfs = '',
     this.obfsPassword = '',
     this.allowInsecure = false,
+    this.awgConfig = '',
+    this.awgVersion = '',
+    this.premium = false,
+    this.locked = false,
+    this.available = true,
+    this.recommend = false,
+    this.priority = 0,
   });
+
+  factory VlessConfig.fromAwg(Map<String, dynamic> json) {
+    String text(String key) {
+      final value = (json[key] ?? '').toString().trim();
+      return value == '0' ? '' : value;
+    }
+
+    final host = text('ip_address');
+    final serverId = text('id');
+    if (host.isEmpty && serverId.isEmpty) {
+      throw const FormatException('AWG server has no identity');
+    }
+    final isLocked = json['locked'] == true;
+    var encoded = isLocked ? '' : text('config');
+    var address = host;
+    var port = 0;
+    if (encoded.isNotEmpty) {
+      final config =
+          RegExp(
+            r'^\s*\[Interface\]',
+            multiLine: true,
+            caseSensitive: false,
+          ).hasMatch(encoded)
+          ? encoded
+          : utf8.decode(base64.decode(encoded.replaceAll(RegExp(r'\s'), '')));
+      final validationText = config
+          .split('\n')
+          .map((line) => line.split('#').first.trim())
+          .join('\n');
+      if (!validationText.toLowerCase().contains('[interface]') ||
+          !validationText.toLowerCase().contains('[peer]')) {
+        throw const FormatException('Invalid AWG configuration');
+      }
+      final endpoint = RegExp(
+        r'^\s*Endpoint\s*=\s*(\[[^\]]+\]|[^\s:]+):(\d+)\s*$',
+        multiLine: true,
+        caseSensitive: false,
+      ).firstMatch(validationText);
+      if (endpoint == null) throw const FormatException('Missing AWG endpoint');
+      address = endpoint.group(1)!.replaceAll(RegExp(r'^\[|\]$'), '');
+      port = int.parse(endpoint.group(2)!);
+      if (port < 1 || port > 65535) {
+        throw const FormatException('Invalid AWG port');
+      }
+      encoded = base64.encode(utf8.encode(config));
+    }
+    final country = text('country');
+    final city = text('state');
+    final name = text('name');
+    final display = [
+      name.isNotEmpty ? name : country,
+      city,
+    ].where((s) => s.isNotEmpty).toSet().join(' • ');
+    final code = text('country_code').toUpperCase();
+    final flag = RegExp(r'^[A-Z]{2}$').hasMatch(code)
+        ? String.fromCharCodes(code.codeUnits.map((c) => 0x1F1E6 + c - 65))
+        : _extractFlag(display);
+    return VlessConfig(
+      id: 'awg:${serverId.isEmpty ? host.toLowerCase() : serverId}',
+      serverName: display.isEmpty ? host : display,
+      address: address,
+      port: port,
+      uuid: '',
+      country: country.isEmpty ? 'Unknown' : country,
+      flag: flag,
+      protocol: 'awg',
+      type: 'udp',
+      awgConfig: encoded,
+      awgVersion: text('version'),
+      premium: json['premium'] == true,
+      locked: isLocked,
+      available: json['available'] != false && encoded.isNotEmpty,
+      recommend: json['recommend'] == true,
+      priority: int.tryParse('${json['priority']}') ?? 0,
+    );
+  }
 
   /// Parse a `hysteria2://` / `hy2://` subscription line.
   ///
@@ -121,8 +220,7 @@ class VlessConfig {
     final q = uri.queryParameters;
     final sni = q['sni'] ?? q['peer'] ?? address;
     final insecure = q['insecure'] ?? q['allowInsecure'] ?? '';
-    final allowInsecure =
-        insecure == '1' || insecure.toLowerCase() == 'true';
+    final allowInsecure = insecure == '1' || insecure.toLowerCase() == 'true';
     final obfs = q['obfs'] ?? '';
     final obfsPassword =
         q['obfs-password'] ?? q['obfsPassword'] ?? q['obfs_password'] ?? '';
@@ -409,7 +507,8 @@ class VlessConfig {
 
     try {
       final uri = Uri.parse(url);
-      if (uri.scheme != 'vless' && uri.scheme != 'ss') throw Exception('Invalid scheme');
+      if (uri.scheme != 'vless' && uri.scheme != 'ss')
+        throw Exception('Invalid scheme');
 
       // Shadowsocks: ss://base64(method:password)@host:port#name
       if (uri.scheme == 'ss') {
@@ -635,8 +734,9 @@ class VlessConfig {
     final Map<String, VlessConfig> unique = <String, VlessConfig>{};
     for (final config in configs) {
       final existing = unique[config.id];
-      unique[config.id] =
-          existing == null ? config : _mergeDuplicate(existing, config);
+      unique[config.id] = existing == null
+          ? config
+          : _mergeDuplicate(existing, config);
     }
     return unique.values.toList(growable: false);
   }
@@ -681,8 +781,7 @@ class VlessConfig {
   }
 
   @override
-  bool operator ==(Object other) =>
-      other is VlessConfig && other.id == id;
+  bool operator ==(Object other) => other is VlessConfig && other.id == id;
 
   @override
   int get hashCode => id.hashCode;
@@ -696,29 +795,117 @@ class VlessConfig {
   }
 
   static String _extractCountry(String name) {
-    if (name.contains('🇷🇺') || name.contains('Russia') || name.contains('RU ') || name.contains('Россия')) return 'Russia';
-    if (name.contains('🇬🇧') || name.contains('UK ') || name.contains('GB ') || name.contains('Britain')) return 'United Kingdom';
-    if (name.contains('🇺🇸') || name.contains('USA') || name.contains('US ')) return 'United States';
-    if (name.contains('🇩🇪') || name.contains('Germany') || name.contains('DE ') || name.contains('Германия')) return 'Germany';
-    if (name.contains('🇳🇱') || name.contains('Netherlands') || name.contains('NL ') || name.contains('Нидерланды')) return 'Netherlands';
-    if (name.contains('🇯🇵') || name.contains('Japan') || name.contains('JP ') || name.contains('Япония')) return 'Japan';
-    if (name.contains('🇸🇬') || name.contains('Singapore') || name.contains('SG ')) return 'Singapore';
-    if (name.contains('🇫🇷') || name.contains('France') || name.contains('FR ') || name.contains('Франция')) return 'France';
-    if (name.contains('🇫🇮') || name.contains('Finland') || name.contains('FI ') || name.contains('Финляндия')) return 'Finland';
-    if (name.contains('🇸🇪') || name.contains('Sweden') || name.contains('SE ') || name.contains('Швеция')) return 'Sweden';
-    if (name.contains('🇵🇱') || name.contains('Poland') || name.contains('PL ') || name.contains('Польша')) return 'Poland';
-    if (name.contains('🇹🇷') || name.contains('Turkey') || name.contains('TR ') || name.contains('Турция')) return 'Turkey';
-    if (name.contains('🇪🇸') || name.contains('Spain') || name.contains('ES ') || name.contains('Испания')) return 'Spain';
-    if (name.contains('🇨🇭') || name.contains('Switzerland') || name.contains('CH ') || name.contains('Швейцария')) return 'Switzerland';
-    if (name.contains('🇦🇹') || name.contains('Austria') || name.contains('AT ') || name.contains('Австрия')) return 'Austria';
-    if (name.contains('🇧🇪') || name.contains('Belgium') || name.contains('BE ') || name.contains('Бельгия')) return 'Belgium';
-    if (name.contains('🇱🇻') || name.contains('Latvia') || name.contains('LV ') || name.contains('Латвия')) return 'Latvia';
-    if (name.contains('🇱🇹') || name.contains('Lithuania') || name.contains('LT ') || name.contains('Литва')) return 'Lithuania';
-    if (name.contains('🇪🇪') || name.contains('Estonia') || name.contains('EE ') || name.contains('Эстония')) return 'Estonia';
-    if (name.contains('🇳🇴') || name.contains('Norway') || name.contains('NO ') || name.contains('Норвегия')) return 'Norway';
-    if (name.contains('🇭🇺') || name.contains('Hungary') || name.contains('HU ') || name.contains('Венгрия')) return 'Hungary';
-    if (name.contains('🇷🇴') || name.contains('Romania') || name.contains('RO ') || name.contains('Румыния')) return 'Romania';
-    if (name.contains('🇨🇿') || name.contains('Czech') || name.contains('CZ ') || name.contains('Чехия')) return 'Czech Republic';
+    if (name.contains('🇷🇺') ||
+        name.contains('Russia') ||
+        name.contains('RU ') ||
+        name.contains('Россия'))
+      return 'Russia';
+    if (name.contains('🇬🇧') ||
+        name.contains('UK ') ||
+        name.contains('GB ') ||
+        name.contains('Britain'))
+      return 'United Kingdom';
+    if (name.contains('🇺🇸') || name.contains('USA') || name.contains('US '))
+      return 'United States';
+    if (name.contains('🇩🇪') ||
+        name.contains('Germany') ||
+        name.contains('DE ') ||
+        name.contains('Германия'))
+      return 'Germany';
+    if (name.contains('🇳🇱') ||
+        name.contains('Netherlands') ||
+        name.contains('NL ') ||
+        name.contains('Нидерланды'))
+      return 'Netherlands';
+    if (name.contains('🇯🇵') ||
+        name.contains('Japan') ||
+        name.contains('JP ') ||
+        name.contains('Япония'))
+      return 'Japan';
+    if (name.contains('🇸🇬') ||
+        name.contains('Singapore') ||
+        name.contains('SG '))
+      return 'Singapore';
+    if (name.contains('🇫🇷') ||
+        name.contains('France') ||
+        name.contains('FR ') ||
+        name.contains('Франция'))
+      return 'France';
+    if (name.contains('🇫🇮') ||
+        name.contains('Finland') ||
+        name.contains('FI ') ||
+        name.contains('Финляндия'))
+      return 'Finland';
+    if (name.contains('🇸🇪') ||
+        name.contains('Sweden') ||
+        name.contains('SE ') ||
+        name.contains('Швеция'))
+      return 'Sweden';
+    if (name.contains('🇵🇱') ||
+        name.contains('Poland') ||
+        name.contains('PL ') ||
+        name.contains('Польша'))
+      return 'Poland';
+    if (name.contains('🇹🇷') ||
+        name.contains('Turkey') ||
+        name.contains('TR ') ||
+        name.contains('Турция'))
+      return 'Turkey';
+    if (name.contains('🇪🇸') ||
+        name.contains('Spain') ||
+        name.contains('ES ') ||
+        name.contains('Испания'))
+      return 'Spain';
+    if (name.contains('🇨🇭') ||
+        name.contains('Switzerland') ||
+        name.contains('CH ') ||
+        name.contains('Швейцария'))
+      return 'Switzerland';
+    if (name.contains('🇦🇹') ||
+        name.contains('Austria') ||
+        name.contains('AT ') ||
+        name.contains('Австрия'))
+      return 'Austria';
+    if (name.contains('🇧🇪') ||
+        name.contains('Belgium') ||
+        name.contains('BE ') ||
+        name.contains('Бельгия'))
+      return 'Belgium';
+    if (name.contains('🇱🇻') ||
+        name.contains('Latvia') ||
+        name.contains('LV ') ||
+        name.contains('Латвия'))
+      return 'Latvia';
+    if (name.contains('🇱🇹') ||
+        name.contains('Lithuania') ||
+        name.contains('LT ') ||
+        name.contains('Литва'))
+      return 'Lithuania';
+    if (name.contains('🇪🇪') ||
+        name.contains('Estonia') ||
+        name.contains('EE ') ||
+        name.contains('Эстония'))
+      return 'Estonia';
+    if (name.contains('🇳🇴') ||
+        name.contains('Norway') ||
+        name.contains('NO ') ||
+        name.contains('Норвегия'))
+      return 'Norway';
+    if (name.contains('🇭🇺') ||
+        name.contains('Hungary') ||
+        name.contains('HU ') ||
+        name.contains('Венгрия'))
+      return 'Hungary';
+    if (name.contains('🇷🇴') ||
+        name.contains('Romania') ||
+        name.contains('RO ') ||
+        name.contains('Румыния'))
+      return 'Romania';
+    if (name.contains('🇨🇿') ||
+        name.contains('Czech') ||
+        name.contains('CZ ') ||
+        name.contains('Чехия'))
+      return 'Czech Republic';
     return 'Unknown';
   }
 
@@ -771,6 +958,13 @@ class VlessConfig {
       obfs: obfs ?? this.obfs,
       obfsPassword: obfsPassword ?? this.obfsPassword,
       allowInsecure: allowInsecure ?? this.allowInsecure,
+      awgConfig: awgConfig,
+      awgVersion: awgVersion,
+      premium: premium,
+      locked: locked,
+      available: available,
+      recommend: recommend,
+      priority: priority,
     );
   }
 }

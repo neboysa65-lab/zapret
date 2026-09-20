@@ -22,12 +22,15 @@ enum HysteriaState {
 /// - it accepts a canonical `hysteria2://` URL and builds the Xray JSON
 ///   natively (LinkParser), so local ports always match its TUN bridge.
 class HysteriaEngineService {
-  static const MethodChannel _channel =
-      MethodChannel('app.vless.vpn/hysteria2');
-  static const EventChannel _statusChannel =
-      EventChannel('app.vless.vpn/hysteria2/status');
+  static const MethodChannel _channel = MethodChannel(
+    'app.vless.vpn/hysteria2',
+  );
+  static const EventChannel _statusChannel = EventChannel(
+    'app.vless.vpn/hysteria2/status',
+  );
 
   bool _initialized = false;
+  int _generation = 0;
   Stream<String>? _rawStream;
   Stream<HysteriaState>? _statusStream;
   Stream<HysteriaTraffic>? _trafficStream;
@@ -52,12 +55,13 @@ class HysteriaEngineService {
   /// The native side requests the VPN permission itself when needed
   /// (VyomPermissionActivity) and restarts the tunnel after the grant.
   Future<bool> connect(String hysteria2Url) async {
-    await initialize();
+    final generation = ++_generation;
+    final initialized = await initialize();
+    if (!initialized || generation != _generation) return false;
     try {
-      return await _channel.invokeMethod<bool>(
-            'connect',
-            {'url': hysteria2Url},
-          ) ??
+      return await _channel.invokeMethod<bool>('connect', {
+            'url': hysteria2Url,
+          }) ??
           false;
     } on PlatformException {
       return false;
@@ -66,10 +70,18 @@ class HysteriaEngineService {
 
   /// Stop the Hysteria2 tunnel.
   Future<void> disconnect() async {
+    _generation++;
+    final stopped = Completer<void>();
+    final subscription = statusStream.listen((state) {
+      if (state == HysteriaState.disconnected && !stopped.isCompleted) {
+        stopped.complete();
+      }
+    });
     try {
       await _channel.invokeMethod('disconnect');
-    } on PlatformException {
-      // Engine already stopped — nothing to do.
+      await stopped.future.timeout(const Duration(seconds: 15));
+    } finally {
+      await subscription.cancel();
     }
   }
 
@@ -100,16 +112,13 @@ class HysteriaEngineService {
 
   /// Cumulative traffic totals (bytes since tunnel start), ~1 event/second.
   Stream<HysteriaTraffic> get trafficStream {
-    _trafficStream ??= _events
-        .where((e) => e.startsWith('TRAFFIC:'))
-        .map((e) {
-          final parts = e.split(':');
-          return HysteriaTraffic(
-            uploadTotal: parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0,
-            downloadTotal: parts.length > 2 ? int.tryParse(parts[2]) ?? 0 : 0,
-          );
-        })
-        .asBroadcastStream();
+    _trafficStream ??= _events.where((e) => e.startsWith('TRAFFIC:')).map((e) {
+      final parts = e.split(':');
+      return HysteriaTraffic(
+        uploadTotal: parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0,
+        downloadTotal: parts.length > 2 ? int.tryParse(parts[2]) ?? 0 : 0,
+      );
+    }).asBroadcastStream();
     return _trafficStream!;
   }
 
@@ -136,5 +145,8 @@ class HysteriaTraffic {
   final int uploadTotal;
   final int downloadTotal;
 
-  const HysteriaTraffic({required this.uploadTotal, required this.downloadTotal});
+  const HysteriaTraffic({
+    required this.uploadTotal,
+    required this.downloadTotal,
+  });
 }

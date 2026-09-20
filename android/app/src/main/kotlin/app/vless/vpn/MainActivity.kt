@@ -35,6 +35,7 @@ class MainActivity : FlutterActivity() {
 
     private var statusSink: EventChannel.EventSink? = null
     private var stateReceiver: BroadcastReceiver? = null
+    private var awgBridge: AwgBridge? = null
 
     private var vleeStatusSink: EventChannel.EventSink? = null
     private var vleeListener: VleeManager.StateListener? = null
@@ -45,6 +46,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        awgBridge = AwgBridge(this, flutterEngine.dartExecutor.binaryMessenger)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -68,8 +70,7 @@ class MainActivity : FlutterActivity() {
                             result.error("BAD_ARGS", "Missing hysteria2 url", null)
                         } else {
                             // Handles VpnService.prepare() + start internally.
-                            VyomVpnManager.connectWithPermission(this, link)
-                            result.success(true)
+                            result.success(VyomVpnManager.connectWithPermission(this, link))
                         }
                     }
 
@@ -133,6 +134,9 @@ class MainActivity : FlutterActivity() {
 
                     "disconnect" -> {
                         VleeManager.stopVpn(applicationContext)
+                        pendingVleeConfig = null
+                        pendingVleeExcluded = emptyList()
+                        pendingVleeAllowed = emptyList()
                         result.success(true)
                     }
 
@@ -187,12 +191,17 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (awgBridge?.onActivityResult(requestCode, resultCode) == true) return
         if (requestCode == VLEE_VPN_REQUEST) {
             val config = pendingVleeConfig
             pendingVleeConfig = null
             if (resultCode == RESULT_OK && config != null) {
                 VleeManager.startVpn(this, config, pendingVleeExcluded, pendingVleeAllowed)
+            } else {
+                emitVlee("STATE:DISCONNECTED")
             }
+            pendingVleeExcluded = emptyList()
+            pendingVleeAllowed = emptyList()
         }
         super.onActivityResult(requestCode, resultCode, data)
     }
@@ -245,6 +254,11 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        awgBridge?.dispose()
+        vleeListener?.let { VleeManager.unregisterListener(it) }
+        vleeListener = null
+        vleeStatusSink = null
+        pendingVleeConfig = null
         unregisterStateReceiver()
         super.onDestroy()
     }

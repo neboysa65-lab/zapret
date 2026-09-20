@@ -7,17 +7,20 @@ import androidx.appcompat.app.AppCompatActivity
 
 class VyomPermissionActivity : AppCompatActivity() {
     private val vpnRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == RESULT_OK) {
-            // Permission granted, trigger the last saved config
-            val config = VyomVpnManager.getLastConfig(this)
-            if (config != null) VyomVpnManager.start(this, config)
-        }
+        VyomVpnManager.completePermission(this,
+            intent.getIntExtra("permissionGeneration", -1), it.resultCode == RESULT_OK)
         finish()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val intent = VpnService.prepare(this)
-        if (intent != null) vpnRequest.launch(intent) else finish()
+        val permissionIntent = VpnService.prepare(this)
+        if (permissionIntent != null) {
+            if (savedInstanceState == null) vpnRequest.launch(permissionIntent)
+        } else {
+            VyomVpnManager.completePermission(this,
+                intent.getIntExtra("permissionGeneration", -1), true)
+            finish()
+        }
     }
 }

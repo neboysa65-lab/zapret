@@ -8,8 +8,61 @@ import 'vlee_api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
+  ApiService({http.Client? client}) : _client = client ?? http.Client();
+  final http.Client _client;
   static const String _cacheKey = 'vless_configs_cache';
   final VleeApiService _vleeApi = VleeApiService();
+
+  Future<List<VlessConfig>> fetchServers() async {
+    // Independent catalogues: an AWG agent outage must not hide VLESS.
+    Object? failure;
+    Future<List<VlessConfig>> safely(Future<List<VlessConfig>> request) async {
+      try {
+        return await request;
+      } catch (error) {
+        failure = error;
+        return [];
+      }
+    }
+
+    final lists = await Future.wait([
+      safely(fetchVlessConfigs()),
+      safely(fetchAwgConfigs()),
+    ]);
+    final result = VlessConfig.dedupe(lists.expand((list) => list));
+    if (result.isEmpty && failure != null) throw failure!;
+    return result;
+  }
+
+  Future<List<VlessConfig>> fetchAwgConfigs() async {
+    final seedHash = await AuthService.loadSeedHash();
+    if (seedHash == null) throw StateError('Not authenticated');
+    final response = await _client
+        .get(
+          Uri.parse('${ApiConfig.baseUrl}/api/v1/awg/servers'),
+          headers: {'X-Seed-Hash': seedHash},
+        )
+        .timeout(const Duration(seconds: 15));
+    if (response.statusCode == 404) return []; // API-first rolling deployment.
+    if (response.statusCode != 200) {
+      throw StateError('AWG HTTP ${response.statusCode}');
+    }
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final result = <VlessConfig>[];
+    for (final entry in body['data'] as List) {
+      try {
+        if (entry is Map<String, dynamic>) {
+          result.add(VlessConfig.fromAwg(entry));
+        }
+      } on FormatException {
+        // One malformed node must not remove other protocols from the catalogue.
+      }
+    }
+    // Personal private keys are deliberately not persisted in SharedPreferences.
+    return result;
+  }
+
+  void dispose() => _client.close();
 
   /// Fetch VLESS configs from our backend (backend proxies subscription, avoids device limit)
   ///
@@ -17,6 +70,9 @@ class ApiService {
   /// (`POST /api/v1/user/server_vlee`) и вливаются в общий список здесь:
   /// протокол определяется полем конфига, как для hysteria2.
   Future<List<VlessConfig>> fetchVlessConfigs() async {
+    final seedHash = await AuthService.loadSeedHash();
+    if (seedHash == null) throw StateError('Not authenticated');
+    final cacheKey = '${_cacheKey}_$seedHash';
     List<VlessConfig> vleeConfigs = [];
     try {
       // VLEE грузится независимо от подписок: недоступность VLEE (нет нод,
@@ -27,18 +83,21 @@ class ApiService {
     }
 
     try {
-      final seedHash = await AuthService.loadSeedHash();
-      if (seedHash == null) throw Exception('Not authenticated');
-
       print('🌐 Fetching configs from backend proxy...');
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/api/v1/configs/'),
-        headers: {'X-Seed-Hash': seedHash},
-      ).timeout(const Duration(seconds: 15));
+      final response = await _client
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/api/v1/configs/'),
+            headers: {'X-Seed-Hash': seedHash},
+          )
+          .timeout(const Duration(seconds: 15));
 
       print('📡 HTTP Status: ${response.statusCode}');
 
       if (response.statusCode != 200) {
+        if (response.statusCode == 401 || response.statusCode == 403) {
+          await _saveToCache(cacheKey, '');
+          return [];
+        }
         throw Exception('Failed to load configs: ${response.statusCode}');
       }
 
@@ -50,7 +109,7 @@ class ApiService {
           lines.whereType<String>().toList(growable: false);
       final allConfigs = [...vleeConfigs, ..._parseConfigs(stringLines)];
 
-      if (allConfigs.isNotEmpty) {
+      {
         // Cache both raw URLs and JSON configs as one entry per line.
         // VLEE-конфиги в общий кэш не пишутся (их plaintext содержит ssh-пароли
         // и хранится отдельно в SecureStorage внутри VleeApiService).
@@ -61,7 +120,7 @@ class ApiService {
           if (c.isHysteria2) return c.hysteria2Url;
           return '';
         }).where((s) => s.isNotEmpty).toList();
-        await _saveToCache(cacheLines.join('\n'));
+        await _saveToCache(cacheKey, cacheLines.join('\n'));
       }
 
       print('✅ Total configs loaded: ${allConfigs.length}');
@@ -70,29 +129,30 @@ class ApiService {
       print('💥 Error fetching configs: $e');
       print('📂 Attempting to load from cache...');
 
-      final cached = await _loadFromCache();
-      if (cached.isNotEmpty) {
+      final cached = await _loadFromCache(cacheKey);
+      if (cached.isNotEmpty || vleeConfigs.isNotEmpty) {
         print('✅ Loaded ${cached.length} configs from cache');
-        return cached;
+        return [...vleeConfigs, ...cached];
       }
 
       rethrow;
     }
   }
 
-  Future<void> _saveToCache(String content) async {
+  Future<void> _saveToCache(String key, String content) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_cacheKey, content);
+      await prefs.remove(_cacheKey);
+      await prefs.setString(key, content);
     } catch (e) {
       print('⚠️ Failed to save cache: $e');
     }
   }
 
-  Future<List<VlessConfig>> _loadFromCache() async {
+  Future<List<VlessConfig>> _loadFromCache(String key) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final content = prefs.getString(_cacheKey);
+      final content = prefs.getString(key);
       if (content != null && content.isNotEmpty) {
         return _parseConfigs(content.split('\n'));
       }
