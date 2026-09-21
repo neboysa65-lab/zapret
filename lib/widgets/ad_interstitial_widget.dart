@@ -42,10 +42,11 @@ class AdInterstitialManager {
         debugPrint('❌ Ad failed to load: ${error.description}');
       },
     );
-    if (generation == _generation)
+    if (generation == _generation) {
       _adLoader = loader;
-    else
+    } else {
       await loader.destroy();
+    }
   }
 
   /// Загружает межстраничную рекламу

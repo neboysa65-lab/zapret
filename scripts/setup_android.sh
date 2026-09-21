@@ -12,5 +12,5 @@ if [[ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]]; then
 fi
 SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 yes | "$SDKMANAGER" --licenses >/dev/null || test "${PIPESTATUS[1]}" = 0
-"$SDKMANAGER" 'platforms;android-34' 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0' 'platform-tools' 'ndk;27.0.12077973' 'cmake;3.22.1'
+"$SDKMANAGER" 'platforms;android-34' 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0' 'platform-tools' 'ndk;28.2.13676358' 'cmake;3.22.1'
 .tools/flutter/bin/flutter config --android-sdk "$ANDROID_HOME"

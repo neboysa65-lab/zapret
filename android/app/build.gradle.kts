@@ -116,6 +116,9 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    // Keep the Flutter 7.x API, with native lifecycle/stability fixes.
+    implementation("com.yandex.android:mobileads:7.18.7")
     // Заменяем устаревший Play Core на новые разделенные библиотеки
     implementation("com.google.android.play:feature-delivery:2.1.0")
     implementation("com.google.android.play:asset-delivery:2.2.2")

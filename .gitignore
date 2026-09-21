@@ -35,6 +35,8 @@ migrate_working_dir/
 .context/
 .tools/
 /android/.kotlin/
+.hoplite/*
+!.hoplite/settings.json
 
 # Symbolication related
 app.*.symbols

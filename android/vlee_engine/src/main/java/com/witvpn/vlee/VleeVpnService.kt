@@ -662,8 +662,8 @@ class VleeVpnService : TProxyService() {
             // следующим TProxyStartService.
             Thread.sleep(500)
         }
-        runCatching { socksServer?.stop() }
         runCatching { transport?.close() }
+        runCatching { socksServer?.stop() }
         socksServer = null
         transport = null
         runCatching { tun?.close() }

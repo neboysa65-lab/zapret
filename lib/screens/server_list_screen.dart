@@ -388,7 +388,7 @@ class _ServerListScreenState extends State<ServerListScreen> {
                       '${server.protocolLabel}${server.premium ? ' · Premium' : ''}',
                       style: TextStyle(
                         fontSize: 12,
-                        color: server.isAwg
+                        color: server.isAwg || server.isVlee
                             ? AppColors.primaryGreen
                             : Colors.grey,
                       ),
@@ -396,10 +396,6 @@ class _ServerListScreenState extends State<ServerListScreen> {
                   ],
                 ),
               ),
-
-              // Protocol badge (VLEE / VLESS / HY2)
-              _buildProtocolBadge(server),
-              const SizedBox(width: 10),
 
               // Ping & Check
               Row(
@@ -446,37 +442,6 @@ class _ServerListScreenState extends State<ServerListScreen> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  /// Короткая метка протокола сервера.
-  String _protocolLabel(VlessConfig server) {
-    if (server.isVlee) return 'VLEE';
-    if (server.isHysteria2) return 'HY2';
-    return 'VLESS';
-  }
-
-  /// Компактный бейдж протокола справа от имени сервера: VLEE подсвечен
-  /// акцентом, остальные — нейтральные, чтобы не мешать списку.
-  Widget _buildProtocolBadge(VlessConfig server) {
-    final isVlee = server.isVlee;
-    final color = isVlee ? AppColors.primaryGreen : Colors.grey[500]!;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withValues(alpha: 0.35), width: 1),
-      ),
-      child: Text(
-        _protocolLabel(server),
-        style: TextStyle(
-          color: color,
-          fontSize: 9,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.8,
         ),
       ),
     );

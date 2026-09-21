@@ -62,7 +62,7 @@ class FlowAuth extends AuthProvider {
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
-  for (final protocol in ['vless', 'ss', 'hysteria2', 'awg2', 'awg3']) {
+  for (final protocol in ['vless', 'ss', 'vlee', 'hysteria2', 'awg2', 'awg3']) {
     for (final premium in [false, true]) {
       testWidgets(
         '$protocol: ${premium ? 'Premium skips' : 'free waits for'} ad, second tap cancels',

@@ -31,7 +31,7 @@ flutter build apk --debug
 (cd android && ./gradlew :amneziawg-tunnel:testDebugUnitTest)
 ```
 
-SDK is pinned to Flutter 3.44.0 to match existing locked packages. The previously
+SDK is pinned to Flutter 3.47.5 (stable) with the current Android embedding fixes. The previously
 missing Firebase Remote Config lock entries are included; no dependency upgrade
 is needed. The native AWG library requires Android 7 / API 24; Gradle enforces it.
 Release signing still uses your existing `android/key.properties` (not committed).
@@ -45,3 +45,11 @@ including backgrounding, UDP/DNS traffic, split tunneling and protocol switching
 Native tests verify parser → userspace fields; they cannot establish a real
 handshake without a configured AWG server/device. Reference binary provenance
 and local lifecycle changes are documented in `android/amneziawg-tunnel/PORT.md`.
+
+Free users use the existing Yandex interstitial/banner flow for AWG too; Premium
+skips ads. A connection starts only after the interstitial dismissal/failure,
+not a timer. Repeated taps cancel preparation/connection, including late ad,
+permission and provisioning responses. SDK delivery itself needs a device test.
+See `docs/CRASH_REMEDIATION.md` for the nine supplied crash reports and remaining
+device-only verification; it is not a claim that all Android framework crashes
+have been reproduced or eliminated.
