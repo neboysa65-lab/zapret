@@ -1,0 +1,3 @@
+<resources>
+    <string name="incomplete_installation">The app installation is incomplete: the Flutter library is missing. Install the full Vless VPN app from the store or use the original universal APK. Save your account recovery phrase before reinstalling.</string>
+</resources>

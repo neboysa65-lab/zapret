@@ -34,11 +34,14 @@ class ServerInfoCard extends StatelessWidget {
           title = l10n.autoSelectBest;
           subtitle = "${l10n.optimized} • ${server.country}";
         } else if (!isAuto && server != null) {
-          title = server.country != 'Unknown'
+          title = server.isAwg
+              ? server.cleanName
+              : server.country != 'Unknown'
               ? server.country
               : server.cleanName;
           subtitle = l10n.manualSelection;
         }
+        if (server != null) subtitle = '$subtitle • ${server.protocolLabel}';
 
         return GestureDetector(
           onTap: () => ServerListScreen.show(context),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // Add this for SystemChrome
 import 'package:provider/provider.dart';
@@ -15,13 +16,24 @@ import '../widgets/action_buttons.dart';
 import '../widgets/ad_interstitial_widget.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({
+    super.key,
+    this.showAd = AdInterstitialManager.showAndWait,
+    this.loadAd = _loadInterstitialAd,
+  });
+
+  final Future<bool> Function() showAd;
+  final Future<void> Function() loadAd;
+
+  static Future<void> _loadInterstitialAd() =>
+      AdInterstitialManager.loadAd(AdConfig.currentInterstitialAdUnitId);
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  Timer? _adReload;
   @override
   void initState() {
     super.initState();
@@ -30,46 +42,51 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _initializeAd() async {
-    debugPrint('📢 _initializeAd: starting...');
-    await AdInterstitialManager.initialize();
-    debugPrint('✅ AdLoader initialized');
-    debugPrint('📥 Loading Interstitial Ad with ID: ${AdConfig.currentInterstitialAdUnitId}');
-    await AdInterstitialManager.loadAd(AdConfig.currentInterstitialAdUnitId);
-    debugPrint('📢 _initializeAd: loadAd call completed, isAdLoaded=${AdInterstitialManager.isAdLoaded}');
+    try {
+      await widget.loadAd();
+    } catch (_) {
+      debugPrint('Interstitial ad unavailable');
+    }
   }
 
   /// Подключает VPN — с рекламой для бесплатных, без рекламы для премиум
-  Future<void> _connectWithAd(AppProvider appProvider, {bool isPremium = false}) async {
-    debugPrint('🔌 User requested VPN connection (isPremium: $isPremium, adLoaded: ${AdInterstitialManager.isAdLoaded})...');
+  Future<void> _connectWithAd(
+    AppProvider appProvider, {
+    bool isPremium = false,
+  }) async {
+    debugPrint(
+      '🔌 User requested VPN connection (isPremium: $isPremium, adLoaded: ${AdInterstitialManager.isAdLoaded})...',
+    );
 
-    if (!isPremium) {
-      // 1. Показываем рекламу и ЖДЁМ её закрытия
-      final adShown = await AdInterstitialManager.showAndWait();
+    await appProvider.connectVpn(
+      beforeConnect: () async {
+        if (!isPremium) {
+          // 1. Показываем рекламу и ЖДЁМ её закрытия
+          final adShown = await widget.showAd();
 
-      if (adShown) {
-        debugPrint('✅ Ad was shown and closed, connecting VPN...');
-      } else {
-        debugPrint('⚠️ Ad was not shown (not loaded or error), connecting VPN anyway...');
-      }
-    } else {
-      debugPrint('⭐ Premium user — skipping ad');
-    }
+          if (adShown) {
+            debugPrint('✅ Ad was shown and closed, connecting VPN...');
+          } else {
+            debugPrint(
+              '⚠️ Ad was not shown (not loaded or error), connecting VPN anyway...',
+            );
+          }
+        } else {
+          debugPrint('⭐ Premium user — skipping ad');
+        }
 
-    // 2. После закрытия рекламы (или сразу для премиум) подключаем VPN
-    if (mounted) {
-      await appProvider.connectVpn();
-
-      // 3. Загружаем следующую рекламу для следующего подключения (только для free)
-      if (!isPremium) {
-        Future.delayed(const Duration(seconds: 2), () {
-          AdInterstitialManager.loadAd(AdConfig.currentInterstitialAdUnitId);
-        });
-      }
+        if (!mounted) throw StateError('Screen disposed');
+      },
+    );
+    if (mounted && !isPremium) {
+      _adReload?.cancel();
+      _adReload = Timer(const Duration(seconds: 2), _initializeAd);
     }
   }
 
   @override
   void dispose() {
+    _adReload?.cancel();
     AdInterstitialManager.dispose();
     super.dispose();
   }
@@ -80,7 +97,8 @@ class _HomeScreenState extends State<HomeScreen> {
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.light, // Белые иконки (время, батарея)
+        statusBarIconBrightness:
+            Brightness.light, // Белые иконки (время, батарея)
         systemNavigationBarColor: AppColors.darkBackground,
         systemNavigationBarIconBrightness: Brightness.light,
       ),
@@ -121,7 +139,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           padding: EdgeInsets.only(
                             left: horizontalPad,
                             right: horizontalPad,
-                            top: 16.0, // Увеличил верхний отступ для гарантии от "челки"
+                            top:
+                                16.0, // Увеличил верхний отступ для гарантии от "челки"
                             bottom: verticalPad,
                           ),
                           child: Column(
@@ -142,14 +161,24 @@ class _HomeScreenState extends State<HomeScreen> {
                               PowerButton(
                                 isConnected: isConnected,
                                 isProcessing: isProcessing,
+                                canCancel: isConnecting,
                                 scale: scale,
                                 onTap: () async {
-                                  if (isConnected) {
+                                  if (appProvider.vpnStatus ==
+                                      VpnStatus.disconnecting)
+                                    return;
+                                  if (appProvider.vpnStatus ==
+                                          VpnStatus.connected ||
+                                      appProvider.vpnStatus ==
+                                          VpnStatus.connecting) {
                                     // Отключаем VPN без рекламы
                                     await appProvider.disconnectVpn();
                                   } else {
                                     // Подключаем VPN ПОСЛЕ просмотра рекламы
-                                    await _connectWithAd(appProvider, isPremium: isPremium);
+                                    await _connectWithAd(
+                                      appProvider,
+                                      isPremium: isPremium,
+                                    );
                                   }
                                 },
                               ),
@@ -182,7 +211,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                     await appProvider.disconnectVpn();
                                   } else {
                                     // Подключаем VPN ПОСЛЕ просмотра рекламы
-                                    await _connectWithAd(appProvider, isPremium: isPremium);
+                                    await _connectWithAd(
+                                      appProvider,
+                                      isPremium: isPremium,
+                                    );
                                   }
                                 },
                               ),

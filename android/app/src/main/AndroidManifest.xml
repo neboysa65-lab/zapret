@@ -38,6 +38,8 @@
             android:name="io.flutter.embedding.android.NormalTheme"
             android:resource="@style/NormalTheme"
             />
+    </activity>
+    <activity android:name=".LaunchActivity" android:exported="true" android:theme="@style/LaunchTheme">
         <intent-filter>
             <action android:name="android.intent.action.MAIN"/>
             <category android:name="android.intent.category.LAUNCHER"/>

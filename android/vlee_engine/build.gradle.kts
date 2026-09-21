@@ -23,6 +23,7 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    testOptions { unitTests.isReturnDefaultValues = true }
 
     // Транзитивные bc*.jar (sshj -> bcpkix/bcutil) тащат дубли манифестов —
     // без этого mergeReleaseJavaResource падает на "4 files found".
@@ -37,6 +38,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     // hev.htproxy.TProxyService + libhev-socks5-tunnel.so live in the
     // hysteria2_engine module; the class is packaged once via the app module.
     compileOnly(project(":hysteria2_engine"))

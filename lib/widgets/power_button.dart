@@ -5,6 +5,7 @@ import '../config/app_theme.dart';
 class PowerButton extends StatefulWidget {
   final bool isConnected;
   final bool isProcessing;
+  final bool canCancel;
   final double scale;
   final VoidCallback onTap;
 
@@ -12,6 +13,7 @@ class PowerButton extends StatefulWidget {
     super.key,
     required this.isConnected,
     this.isProcessing = false,
+    this.canCancel = false,
     this.scale = 1.0,
     required this.onTap,
   });
@@ -88,103 +90,115 @@ class _PowerButtonState extends State<PowerButton>
           ],
 
           // Main Button
-          GestureDetector(
-            onTap: widget.isProcessing ? null : widget.onTap,
-            child: AnimatedBuilder(
-              animation: _pulseController,
-              builder: (context, child) {
-                final pulse =
-                    0.6 +
-                    (0.4 *
-                        (1.0 -
-                            (math
-                                .sin(_pulseController.value * 2 * math.pi)
-                                .abs())));
+          Semantics(
+            button: true,
+            label: widget.canCancel
+                ? (Localizations.localeOf(context).languageCode == 'ru'
+                      ? 'Отменить подключение'
+                      : 'Cancel connection')
+                : null,
+            child: GestureDetector(
+              onTap: widget.isProcessing && !widget.canCancel
+                  ? null
+                  : widget.onTap,
+              child: AnimatedBuilder(
+                animation: _pulseController,
+                builder: (context, child) {
+                  final pulse =
+                      0.6 +
+                      (0.4 *
+                          (1.0 -
+                              (math
+                                  .sin(_pulseController.value * 2 * math.pi)
+                                  .abs())));
 
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  width: outerSize,
-                  height: outerSize,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: widget.isConnected
-                        ? const LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              AppColors.primaryGreen,
-                              AppColors.primaryDark,
-                            ],
-                          )
-                        : LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.grey.shade700,
-                              Colors.grey.shade800,
-                            ],
-                          ),
-                    boxShadow: widget.isConnected
-                        ? [
-                            BoxShadow(
-                              color: AppColors.primaryGreen.withValues(
-                                alpha: 0.6 * pulse,
-                              ),
-                              blurRadius: 60,
-                              spreadRadius: 5 * pulse,
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    width: outerSize,
+                    height: outerSize,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: widget.isConnected
+                          ? const LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                AppColors.primaryGreen,
+                                AppColors.primaryDark,
+                              ],
+                            )
+                          : LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.grey.shade700,
+                                Colors.grey.shade800,
+                              ],
                             ),
-                          ]
-                        : [
+                      boxShadow: widget.isConnected
+                          ? [
+                              BoxShadow(
+                                color: AppColors.primaryGreen.withValues(
+                                  alpha: 0.6 * pulse,
+                                ),
+                                blurRadius: 60,
+                                spreadRadius: 5 * pulse,
+                              ),
+                            ]
+                          : [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.3),
+                                blurRadius: 10,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                      border: Border.all(
+                        color: widget.isConnected
+                            ? const Color(0xFF1F2515)
+                            : Colors.grey.shade900,
+                        width: 4,
+                      ),
+                    ),
+                    child: Center(
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        width: innerSize,
+                        height: innerSize,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: widget.isConnected
+                              ? AppColors.primaryGreen
+                              : AppColors.cardBackground,
+                          border: Border.all(
+                            color: widget.isConnected
+                                ? Colors.white.withValues(alpha: 0.2)
+                                : Colors.grey.shade600,
+                            width: 1,
+                          ),
+                          boxShadow: const [
                             BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.3),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
+                              color: Colors.black26,
+                              blurRadius: 4,
+                              offset: Offset(0, 2),
                             ),
                           ],
-                    border: Border.all(
-                      color: widget.isConnected
-                          ? const Color(0xFF1F2515)
-                          : Colors.grey.shade900,
-                      width: 4,
-                    ),
-                  ),
-                  child: Center(
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 300),
-                      width: innerSize,
-                      height: innerSize,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: widget.isConnected
-                            ? AppColors.primaryGreen
-                            : AppColors.cardBackground,
-                        border: Border.all(
-                          color: widget.isConnected
-                              ? Colors.white.withValues(alpha: 0.2)
-                              : Colors.grey.shade600,
-                          width: 1,
                         ),
-                        boxShadow: const [
-                          BoxShadow(
-                            color: Colors.black26,
-                            blurRadius: 4,
-                            offset: Offset(0, 2),
+                        child: Center(
+                          child: Icon(
+                            widget.canCancel
+                                ? Icons.close_rounded
+                                : Icons.power_settings_new_rounded,
+                            size: iconSize,
+                            color: widget.isConnected
+                                ? Colors.black
+                                : Colors.grey.shade500,
                           ),
-                        ],
-                      ),
-                      child: Center(
-                        child: Icon(
-                          Icons.power_settings_new_rounded,
-                          size: iconSize,
-                          color: widget.isConnected
-                              ? Colors.black
-                              : Colors.grey.shade500,
                         ),
                       ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
           ),
         ],

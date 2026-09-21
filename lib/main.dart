@@ -69,8 +69,21 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => AppProvider()),
         ChangeNotifierProvider(create: (_) => AuthProvider()),
+        ChangeNotifierProxyProvider<AuthProvider, AppProvider>(
+          create: (_) => AppProvider(),
+          update: (_, auth, app) {
+            if (auth.state != AuthState.unknown) {
+              app!.updateAccount(
+                auth.state == AuthState.authenticated
+                    ? auth.user?.userId
+                    : null,
+                auth.isPremium,
+              );
+            }
+            return app!;
+          },
+        ),
       ],
       child: MaterialApp(
         title: 'Vless VPN',
