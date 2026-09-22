@@ -201,6 +201,48 @@ class VlessConfig {
     );
   }
 
+  /// A premium-gated node the backend deliberately ships without connection
+  /// details — a free user browsing the catalogue sees the row with a lock
+  /// (the AWG `locked` contract, mirrored for VLESS).
+  ///
+  /// The payload carries display metadata only (`remarks`/`name`, optional
+  /// `address`/`port`/`country`/`country_code`); there is deliberately no
+  /// uuid/pbk/flow, so nothing here can be dialled even after extraction.
+  factory VlessConfig.fromLockedEntry(Map<String, dynamic> json) {
+    String text(String key) {
+      final value = (json[key] ?? '').toString().trim();
+      return value == '0' ? '' : value;
+    }
+
+    final remarks = text('remarks').isNotEmpty ? text('remarks') : text('name');
+    final address =
+        text('address').isNotEmpty ? text('address') : text('ip_address');
+    final port = int.tryParse('${json['port']}') ?? 0;
+    final country = text('country');
+    final code = text('country_code').toUpperCase();
+    final flag = RegExp(r'^[A-Z]{2}$').hasMatch(code)
+        ? String.fromCharCodes(code.codeUnits.map((c) => 0x1F1E6 + c - 65))
+        : _extractFlag(remarks);
+
+    return VlessConfig(
+      // Namespaced id: a locked row must never collapse into a real one
+      // during dedupe — same endpoint, different payload availability.
+      id: 'locked|${text('id').isNotEmpty ? text('id') : '$address:$port:$remarks'}',
+      serverName: remarks.isEmpty ? address : remarks,
+      address: address,
+      port: port > 0 ? port : 0,
+      uuid: '',
+      country: country.isEmpty ? _extractCountry(remarks) : country,
+      flag: flag,
+      protocol: 'vless',
+      premium: json['premium'] == true,
+      locked: true,
+      available: false,
+      recommend: json['recommend'] == true,
+      priority: int.tryParse('${json['priority']}') ?? 0,
+    );
+  }
+
   /// Parse a `hysteria2://` / `hy2://` subscription line.
   ///
   /// Official URI form (same as gwapk's VlessParser.parseHysteria2Url):
@@ -344,6 +386,13 @@ class VlessConfig {
   /// Connection always uses the raw JSON, preserving balancer + all outbounds.
   factory VlessConfig.fromJsonConfig(Map<String, dynamic> map) {
     final remarks = (map['remarks'] as String?) ?? 'Server';
+
+    // Premium-gated entry: the backend strips the connectable payload and
+    // ships display metadata + `locked`. The Xray parsing below would only
+    // produce a dead config, so route to the locked builder first.
+    if (map['locked'] == true) {
+      return VlessConfig.fromLockedEntry(map);
+    }
 
     String address = '';
     int port = 443;

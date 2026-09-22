@@ -105,14 +105,35 @@ class ApiService {
       final List<dynamic> lines = body['configs'] as List<dynamic>;
       print('📋 Got ${lines.length} configs from backend');
 
-      final List<String> stringLines =
-          lines.whereType<String>().toList(growable: false);
-      final allConfigs = [...vleeConfigs, ..._parseConfigs(stringLines)];
+      // Premium-gated nodes arrive as objects carrying display metadata only.
+      // Older builds dropped them via whereType<String>() — which is exactly
+      // why the object form is backwards compatible.
+      final lockedConfigs = <VlessConfig>[];
+      final stringLines = <String>[];
+      for (final entry in lines) {
+        if (entry is Map<String, dynamic>) {
+          try {
+            lockedConfigs.add(VlessConfig.fromLockedEntry(entry));
+          } catch (e) {
+            // One malformed node must not hide the rest of the catalogue.
+            print('⚠️ Skipping malformed locked node: $e');
+          }
+        } else if (entry is String) {
+          stringLines.add(entry);
+        }
+      }
+      final allConfigs = [
+        ...vleeConfigs,
+        ...lockedConfigs,
+        ..._parseConfigs(stringLines),
+      ];
 
       {
         // Cache both raw URLs and JSON configs as one entry per line.
         // VLEE-конфиги в общий кэш не пишутся (их plaintext содержит ssh-пароли
         // и хранится отдельно в SecureStorage внутри VleeApiService).
+        // Locked nodes are skipped too: lock state is server-driven, and a
+        // stale cached lock would linger after the user buys premium.
         final cacheLines = allConfigs.where((c) => !c.isVlee).map((c) {
           if (c.hasJsonConfig) return c.rawJsonConfig!;
           if (c.originalUrl.isNotEmpty) return c.originalUrl;
