@@ -1,0 +1,544 @@
+import asyncio
+import hashlib
+import logging
+import socket
+import time as time_module
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl
+
+from fastapi import APIRouter, Request
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+MONGODB_URI = "mongodb://127.0.0.1:27017/?retryWrites=true&w=majority"
+DB_NAME = "GreyWebVPN"
+COLLECTION_NAME = "active_connections"
+
+# ── Параметры учёта ──────────────────────────────────────────────────────────
+# ВАЖНО: heartbeat-учёт остался ТОЛЬКО для VLESS и AWG.
+# Онлайн IKEv2 больше НЕ считается по heartbeat из приложения — API сам
+# опрашивает каждый IKEv2-сервер (node_exporter :9100, метрика ipsec_clients)
+# в src/utils/server_metrics.py и берёт число подключённых оттуда.
+# heartbeat/connect с protocol=ikev2 (старые версии приложения) принимаются,
+# но НЕ сохраняются.
+#
+# Сколько минут без heartbeat юзер (VLESS/AWG) считается онлайн.
+# Прила шлёт heartbeat раз в 60 сек; 5 минут = терпим до 4 пропусков
+# (Doze, плохая сеть, фоновые ограничения Android).
+ONLINE_WINDOW_MINUTES = 5
+# Через сколько секунд Mongo сама удаляет неактивные документы (TTL-индекс).
+# Должно быть заметно больше ONLINE_WINDOW_MINUTES.
+TTL_EXPIRE_SECONDS = 900  # 15 минут
+# Грейс после disconnect: «опоздавший» heartbeat, прилетевший в течение этого
+# времени после disconnect, НЕ воскрешает юзера (защита от гонки
+# disconnect -> застрявший в полёте heartbeat -> юзер-призрак).
+DISCONNECT_GRACE_SECONDS = 90
+# Кэш ответа /bot/servers/stats (бот автообновляется каждые 3 сек).
+STATS_CACHE_SECONDS = 2.5
+# Подпись запросов: прила (ModifyRequestInterceptor) добавляет к каждому POST
+# поля hash/time, где hash = sha256("{time}|" + APP_SIGN_SECRET).
+APP_SIGN_SECRET = "strongVPN!@#"
+
+# ── Один общий Mongo-клиент на процесс (вместо нового на каждый запрос) ──────
+_mongo_client: AsyncIOMotorClient | None = None
+_indexes_ready = False
+_indexes_lock = asyncio.Lock()
+
+
+def _get_client() -> AsyncIOMotorClient:
+    global _mongo_client
+    if _mongo_client is None:
+        _mongo_client = AsyncIOMotorClient(MONGODB_URI, maxPoolSize=50)
+    return _mongo_client
+
+
+async def _ensure_indexes(collection) -> None:
+    """Создаёт индексы один раз за время жизни процесса."""
+    global _indexes_ready
+    if _indexes_ready:
+        return
+    async with _indexes_lock:
+        if _indexes_ready:
+            return
+        # 1) Уникальный индекс по userId (документ на юзера ровно один).
+        #    Если в коллекции исторически остались дубли — чистим, оставляя
+        #    самый свежий по lastSeen.
+        try:
+            await collection.create_index("userId", unique=True, name="userId_unique")
+        except Exception as e:
+            logger.warning(f"active_connections: userId index failed ({e}), deduping...")
+            try:
+                pipeline = [
+                    {"$sort": {"lastSeen": -1}},
+                    {"$group": {"_id": "$userId", "keep": {"$first": "$_id"}}},
+                ]
+                keep_ids = {doc["keep"] async for doc in collection.aggregate(pipeline)}
+                await collection.delete_many({"_id": {"$nin": list(keep_ids)}})
+                await collection.create_index("userId", unique=True, name="userId_unique")
+            except Exception as e2:
+                logger.error(f"active_connections: dedupe/index retry failed: {e2}")
+        # 2) TTL-индекс: Mongo сама удаляет давно молчащие документы.
+        #    Никаких delete_many в эндпоинте статистики больше нет.
+        try:
+            await collection.create_index(
+                "lastSeen",
+                expireAfterSeconds=TTL_EXPIRE_SECONDS,
+                name="lastSeen_ttl",
+            )
+        except Exception as e:
+            # Индекс мог быть создан раньше с другим expireAfterSeconds — обновляем.
+            logger.warning(f"active_connections: TTL index create failed ({e}), recreating...")
+            try:
+                await collection.drop_index("lastSeen_ttl")
+            except Exception:
+                pass
+            try:
+                await collection.create_index(
+                    "lastSeen",
+                    expireAfterSeconds=TTL_EXPIRE_SECONDS,
+                    name="lastSeen_ttl",
+                )
+            except Exception as e2:
+                logger.error(f"active_connections: TTL index retry failed: {e2}")
+        _indexes_ready = True
+
+
+async def _get_collection():
+    collection = _get_client()[DB_NAME][COLLECTION_NAME]
+    await _ensure_indexes(collection)
+    return collection
+
+
+def _normalize_protocol(value: str) -> str:
+    protocol = (value or "").strip().lower()
+    if protocol in ("awg", "amneziawg", "amnezia_wg", "amnezia-wg"):
+        return "awg"
+    # hysteria2 живёт в списке VLESS-серверов (VlessManager в приложении),
+    # поэтому учитываем его в бакете vless. Раньше он ошибочно падал в ikev2.
+    if protocol in ("vless", "hysteria2", "hy2"):
+        return "vless"
+    if protocol == "gw":
+        return "gw"
+    return "ikev2"
+
+
+def _parse_form(body: bytes) -> dict[str, str]:
+    """Корректный разбор form-urlencoded тела (с URL-декодированием)."""
+    try:
+        return dict(parse_qsl(body.decode("utf-8"), keep_blank_values=True))
+    except Exception:
+        return {}
+
+
+def _signature_valid(params: dict[str, str]) -> bool:
+    """Проверяет подпись, которую прила добавляет к каждому POST.
+
+    ModifyRequestInterceptor в APK шлёт hash = sha256("{unixtime}|strongVPN!@#")
+    и сам unixtime в поле time. Окно времени специально не проверяем жёстко:
+    у части устройств сильно сбиты часы (это уже ловили на AWG), а подпись
+    и без окна доказывает знание секрета.
+    """
+    sig_hash = params.get("hash", "").strip().lower()
+    sig_time = params.get("time", "").strip()
+    if not sig_hash or not sig_time:
+        return False
+    expected = hashlib.sha256(f"{sig_time}|{APP_SIGN_SECRET}".encode()).hexdigest()
+    return sig_hash == expected
+
+
+@router.post("/vpn/api/v1/user/connection/update")
+async def update_connection(request: Request):
+    body = await request.body()
+    params = _parse_form(body)
+
+    user_id = params.get("userId", "").strip()
+    server_ip = params.get("serverIp", "").strip()
+    protocol = _normalize_protocol(params.get("protocol", "ikev2"))
+    action = params.get("action", "connect").strip()
+    signed = _signature_valid(params)
+
+    if not user_id:
+        return {"success": 0, "message": "userId required"}
+
+    # IKEv2 больше не учитывается по heartbeat: онлайн берётся напрямую
+    # с серверов (node_exporter, ipsec_clients). connect/heartbeat с
+    # protocol=ikev2 продолжают слать СТАРЫЕ версии приложения — отвечаем ok
+    # для совместимости, но в БД ничего не пишем.
+    # ВНИМАНИЕ: disconnect обрабатываем для ЛЮБОГО протокола — приложение
+    # шлёт disconnect с захардкоженным protocol=ikev2 даже для VLESS/AWG,
+    # а сама обработка идёт только по userId.
+    if action in ("connect", "heartbeat") and protocol == "ikev2":
+        return {"success": 1, "message": "ok"}
+
+    if action in ("connect", "heartbeat") and not server_ip:
+        return {"success": 0, "message": "serverIp required for connect/heartbeat"}
+
+    collection = await _get_collection()
+    now = datetime.now(timezone.utc)
+
+    if action == "connect":
+        if not signed:
+            logger.warning(f"connection/update: unsigned connect from userId={user_id}")
+        await collection.update_one(
+            {"userId": user_id},
+            {
+                "$set": {
+                    "userId": user_id,
+                    "serverIp": server_ip,
+                    "protocol": protocol,
+                    "connectedAt": now,
+                    "lastSeen": now,
+                    "signed": signed,
+                },
+                "$unset": {"disconnectedAt": ""},
+            },
+            upsert=True,
+        )
+
+    elif action == "disconnect":
+        # Подпись обязательна: disconnect раньше УДАЛЯЛ запись, и любой желающий
+        # мог обнулять счётчик чужими userId. Теперь без валидной подписи — игнор.
+        if not signed:
+            logger.warning(f"connection/update: rejected unsigned disconnect for userId={user_id}")
+            return {"success": 1, "message": "ok"}
+        # Мягкое отключение вместо удаления: документ остаётся (история видна),
+        # TTL-индекс удалит его сам через TTL_EXPIRE_SECONDS.
+        await collection.update_one(
+            {"userId": user_id},
+            {"$set": {"disconnectedAt": now, "lastSeen": now}},
+        )
+
+    elif action == "heartbeat":
+        if not signed:
+            logger.warning(f"connection/update: unsigned heartbeat from userId={user_id}")
+        # КЛЮЧЕВОЙ ФИКС: upsert=True. Раньше heartbeat не воскрешал запись,
+        # и юзер, чья запись один раз удалилась чисткой, пропадал из счётчика
+        # НАВСЕГДА, продолжая слать heartbeat'ы в пустоту.
+        #
+        # Фильтр с $or — грейс после disconnect: если юзер только что (90 сек)
+        # явно отключился, опоздавший heartbeat не воскрешает его. У живого
+        # подключения heartbeat'ы идут каждые 60 сек, так что настоящий онлайн
+        # восстановится максимум за 2 такта.
+        grace_cutoff = now - timedelta(seconds=DISCONNECT_GRACE_SECONDS)
+        try:
+            await collection.update_one(
+                {
+                    "userId": user_id,
+                    "$or": [
+                        {"disconnectedAt": {"$exists": False}},
+                        {"disconnectedAt": {"$lt": grace_cutoff}},
+                    ],
+                },
+                {
+                    "$set": {
+                        "userId": user_id,
+                        "lastSeen": now,
+                        "serverIp": server_ip,
+                        "protocol": protocol,
+                        "signed": signed,
+                    },
+                    "$setOnInsert": {"connectedAt": now},
+                    "$unset": {"disconnectedAt": ""},
+                },
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            # Документ существует, но не прошёл фильтр => недавний disconnect.
+            # Это и есть «опоздавший» heartbeat — молча игнорируем.
+            pass
+
+    return {"success": 1, "message": "ok"}
+
+
+# ── Кэш статистики (бот опрашивает каждые 3 сек) ─────────────────────────────
+_stats_cache: dict = {"ts": 0.0, "data": None}
+_stats_lock = asyncio.Lock()
+
+
+# ── Отображаемый IP GW-ноды для сводки бота ──────────────────────────────────
+# В экране «Сводка по серверам» бот для GW-нод показывает не прокси-IP
+# (proxy_host — это IP CDN/прокси-фронта), а A-запись служебного домена ноды:
+# ip_address = billing.gwapp.store  ->  резолвим billing1.gwapp.store.
+# Админ для каждой ноды создаёт DNS-only запись «хост + 1», в ней прописан
+# реальный IP VPS. Не резолвится / ip_address не домен — отдаём "" и бот
+# показывает как раньше (proxy_host).
+GW_DISPLAY_IP_TTL_SECONDS = 300.0
+_gw_display_ip_cache: dict[str, tuple[float, str]] = {}
+
+
+async def _gw_display_ip(ip_address: str) -> str:
+    """A-запись (IPv4) домена «<label>1.<rest>» для домена ноды, с кэшем."""
+    host = (ip_address or "").strip()
+    # не домен (чистый IP) или кривая запись — показывать нечего
+    if not host or "." not in host or host.replace(".", "").isdigit():
+        return ""
+    label, _, rest = host.partition(".")
+    display_host = f"{label}1.{rest}"
+
+    now = time_module.monotonic()
+    cached = _gw_display_ip_cache.get(display_host)
+    if cached and now - cached[0] < GW_DISPLAY_IP_TTL_SECONDS:
+        return cached[1]
+
+    ip = ""
+    try:
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(display_host, None, family=socket.AF_INET)
+        if infos:
+            ip = infos[0][4][0]
+    except Exception as e:  # NXDOMAIN и прочее — просто нет записи (пока)
+        logger.debug(f"GW display IP: {display_host} не резолвится: {e}")
+
+    _gw_display_ip_cache[display_host] = (now, ip)
+    return ip
+
+
+@router.get("/vpn/api/v1/bot/servers/stats")
+async def get_servers_stats():
+    # Лёгкий кэш: при открытой админке бот дёргает эндпоинт каждые 3 сек,
+    # незачем каждый раз перечитывать все коллекции.
+    now_mono = time_module.monotonic()
+    if _stats_cache["data"] is not None and now_mono - _stats_cache["ts"] < STATS_CACHE_SECONDS:
+        return _stats_cache["data"]
+
+    async with _stats_lock:
+        now_mono = time_module.monotonic()
+        if _stats_cache["data"] is not None and now_mono - _stats_cache["ts"] < STATS_CACHE_SECONDS:
+            return _stats_cache["data"]
+
+        from src.db.v1.server_pojo import ServerPojo as Ikev2ServerPojo
+        from src.db.v3.a3xui.server_pojo import ServerPojo as VlessServerPojo
+        from src.db.v3.awg.server_pojo import ServerPojo as AwgServerPojo
+        from src.db.v3.gw.server_pojo import ServerPojo as GwServerPojo
+        from src.utils.gw_metrics import get_gw_tunnel_count
+        from src.utils.server_metrics import get_ipsec_stats
+
+        ikev2_servers = await Ikev2ServerPojo.find_all()
+        vless_servers = await VlessServerPojo.find_all()
+        awg_servers = await AwgServerPojo.find_all()
+        gw_servers = await GwServerPojo.find_all()
+
+        collection = await _get_collection()
+
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(minutes=ONLINE_WINDOW_MINUTES)
+
+        # heartbeat-учёт: ТОЛЬКО VLESS и AWG.
+        # Раньше тут был delete_many (чистка при КАЖДОМ просмотре статистики —
+        # гонка с heartbeat'ами). Теперь чтение ничего не удаляет:
+        # окно онлайна — это просто фильтр, физическую чистку делает TTL-индекс.
+        active = await collection.find(
+            {
+                "lastSeen": {"$gte": window_start},
+                "disconnectedAt": {"$exists": False},
+            }
+        ).to_list(length=None)
+
+        vless_online = sum(1 for c in active if _normalize_protocol(c.get("protocol", "")) == "vless")
+        awg_online = sum(1 for c in active if _normalize_protocol(c.get("protocol", "")) == "awg")
+        gw_heartbeat_online = sum(1 for c in active if _normalize_protocol(c.get("protocol", "")) == "gw")
+
+        # Count by server (только vless/awg/gw; записи ikev2 от старых версий
+        # приложения могут ещё лежать в БД до истечения TTL — игнорируем их)
+        server_counts_by_protocol = {
+            "vless": {},
+            "awg": {},
+            "gw": {},
+        }
+        for c in active:
+            ip = c.get("serverIp", "")
+            if not ip:
+                continue
+            protocol = _normalize_protocol(c.get("protocol", ""))
+            if protocol not in server_counts_by_protocol:
+                continue
+            protocol_counts = server_counts_by_protocol[protocol]
+            protocol_counts[ip] = protocol_counts.get(ip, 0) + 1
+
+        # ── IKEv2: онлайн напрямую с серверов ────────────────────────────────
+        # Источник — фоновый опрос node_exporter (:9100/metrics) каждого
+        # IKEv2-сервера в server_metrics.py: ipsec_clients / ipsec_connecting.
+        # Если данные по серверу устарели (сервер недоступен) — показываем 0
+        # и metricsFresh=false.
+        ikev2_online = 0
+        ikev2_connecting = 0
+        ikev2_data = []
+        for s in ikev2_servers:
+            stats = get_ipsec_stats(s.ip_address)
+            online = stats["clients"] if stats else 0
+            connecting = stats["connecting"] if stats else 0
+            ikev2_online += online
+            ikev2_connecting += connecting
+            ikev2_data.append({
+                "ipAddress": s.ip_address,
+                "country": s.country,
+                "countryCode": s.country_code,
+                "status": s.status,
+                "premium": s.premium,
+                "onlineUsers": online,
+                "connectingUsers": connecting,
+                "metricsFresh": stats is not None,
+            })
+
+        vless_data = []
+        for s in vless_servers:
+            # Vless domain or ip usually acts as the serverIp in active connections
+            ip = s.server_domain_port_path.split(":")[0] if s.server_domain_port_path else s.server_ip
+            vless_data.append({
+                "ipAddress": s.server_ip,
+                "domain": s.server_domain_port_path,
+                "description": s.description,
+                "onlineUsers": server_counts_by_protocol["vless"].get(
+                    ip,
+                    server_counts_by_protocol["vless"].get(s.server_ip, 0),
+                ),
+            })
+
+        awg_data = []
+        for s in awg_servers:
+            awg_data.append({
+                "ipAddress": s.ip_address,
+                "country": s.country,
+                "countryCode": s.country_code,
+                "status": s.status,
+                "premium": s.premium,
+                "onlineUsers": server_counts_by_protocol["awg"].get(s.ip_address, 0),
+            })
+
+        # ── GW: онлайн напрямую с нод (счётчик бриджа), фолбэк на хартбиты ──
+        from src.utils.gw_metrics import get_gw_tunnel_count
+
+        gw_data = []
+        # Несколько записей БД могут указывать на ОДНУ ноду (один реальный IP,
+        # один бридж с одним счётчиком). В суммы (gwOnline / totalOnline)
+        # ноду считаем ОДИН раз, иначе онлайн задваивается. Строки списка
+        # остаются по каждой записи как раньше.
+        node_online: dict[str, dict] = {}
+        for s in gw_servers:
+            server_count = await get_gw_tunnel_count(
+                s.ip_address or s.proxy_host, s.stats_token
+            )
+            if server_count is not None:
+                online = server_count
+                source = "bridge"
+            else:
+                online = server_counts_by_protocol["gw"].get(s.ip_address, 0)
+                online += server_counts_by_protocol["gw"].get(s.proxy_host, 0)
+                source = "heartbeat"
+            display_ip = await _gw_display_ip(s.ip_address)
+            # ключ уникальности ноды — её реальный IP (A-запись «хост+1»)
+            st = node_online.setdefault(
+                display_ip or s.ip_address or s.proxy_host,
+                {"bridge": None, "heartbeat": 0},
+            )
+            if source == "bridge":
+                # у дублей счётчик один и тот же, берём max (дрожит на единицы)
+                st["bridge"] = max(st["bridge"] or 0, online)
+            else:
+                # хартбиты у дублей — дополнение друг друга, складываем
+                st["heartbeat"] += online
+            gw_data.append({
+                "ipAddress": s.ip_address,
+                "proxyHost": s.proxy_host,
+                # реальный IP ноды: A-запись домена «хост+1» ("" — нет записи)
+                "displayIp": display_ip,
+                "name": s.name,
+                "country": s.country,
+                "countryCode": s.country_code,
+                "status": s.status,
+                "premium": s.premium,
+                "onlineUsers": online,
+                "metricsSource": source,
+            })
+
+        gw_online = 0
+        for st in node_online.values():
+            gw_online += st["bridge"] if st["bridge"] is not None else st["heartbeat"]
+
+        total_online = ikev2_online + vless_online + awg_online + gw_online
+
+        response = {
+            "success": 1,
+            "data": {
+                "totalServers": len(ikev2_servers) + len(vless_servers) + len(awg_servers) + len(gw_servers),
+                "ikev2Servers": len(ikev2_servers),
+                "vlessServers": len(vless_servers),
+                "awgServers": len(awg_servers),
+                "gwServers": len(gw_servers),
+                "totalOnline": total_online,
+                "ikev2Online": ikev2_online,
+                "ikev2Connecting": ikev2_connecting,
+                "vlessOnline": vless_online,
+                "awgOnline": awg_online,
+                "gwOnline": gw_online,
+                # окно heartbeat-онлайна: касается только VLESS/AWG
+                "onlineWindowMinutes": ONLINE_WINDOW_MINUTES,
+                # источник данных IKEv2 — прямой опрос серверов
+                "ikev2Source": "node_exporter",
+                "gwSource": "bridge+heartbeat_fallback",
+                "servers": ikev2_data,
+                "vlessServersList": vless_data,
+                "awgServersList": awg_data,
+                "gwServersList": gw_data,
+            },
+        }
+
+        _stats_cache["data"] = response
+        _stats_cache["ts"] = time_module.monotonic()
+        return response
+
+
+@router.post("/vpn/api/v1/user/servers/load")
+async def get_servers_load():
+    """
+    Returns server load as percentage to be used by Android clients.
+    """
+    from src.db.v1.server_pojo import ServerPojo as Ikev2ServerPojo
+    from src.db.v3.a3xui.server_pojo import ServerPojo as VlessServerPojo
+    from src.db.v3.awg.server_pojo import ServerPojo as AwgServerPojo
+    from src.utils.server_metrics import SERVER_METRICS_STATE
+
+    ikev2_servers = await Ikev2ServerPojo.find_all()
+    vless_servers = await VlessServerPojo.find_all()
+    awg_servers = await AwgServerPojo.find_all()
+
+    load_data = {}
+
+    # Load all tracked metrics (which includes Remnawave VLESS servers and active IKEv2)
+    for ip_or_host, data in SERVER_METRICS_STATE.items():
+        load_data[ip_or_host] = data.get("load_percent", 1)
+
+    # Ensure DB servers are also included with default 1% if they lack metrics
+    for s in ikev2_servers:
+        ip = s.ip_address
+        if ip and ip not in load_data:
+            load_data[ip] = 1
+
+    for s in vless_servers:
+        host = s.server_ip if s.server_ip else s.server_domain_port_path_sub.split(":")[0]
+        if host and host not in load_data:
+            load_data[host] = 1
+
+    for s in awg_servers:
+        ip = s.ip_address
+        if ip and ip not in load_data:
+            load_data[ip] = 1
+
+    from src.db.v3.gw.server_pojo import ServerPojo as GwServerPojo
+
+    for s in await GwServerPojo.find_all():
+        for host in (s.ip_address, s.proxy_host):
+            if host and host not in load_data:
+                load_data[host] = 1
+
+    logger.debug(f"servers/load: SERVER_METRICS_STATE keys={list(SERVER_METRICS_STATE.keys())}")
+    logger.debug(f"servers/load: load_data={load_data}")
+
+    return {
+        "success": 1,
+        "data": load_data
+    }
