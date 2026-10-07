@@ -2,8 +2,7 @@ from typing import Optional
 
 import motor.motor_asyncio
 
-MONGODB_URI = "mongodb://127.0.0.1:27017/?retryWrites=true&w=majority"
-DB_NAME = "GreyWebVPN"
+from src.config import MONGODB_URI, DB_NAME, get_db  # central config
 COLLECTION_NAME = "invoices_v3"
 
 
@@ -21,11 +20,11 @@ class InvoicePojo:
         self.p_phone: str = ""
         self.commission: str = ""
         self.plan: str = ""
+        self.provider: str = ""
 
     @staticmethod
     async def get_collection():
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
-        db = client[DB_NAME]
+        db = get_db()
         return db[COLLECTION_NAME]
 
     def to_doc(self) -> dict:
@@ -42,6 +41,7 @@ class InvoicePojo:
             "p_phone": self.p_phone,
             "commission": self.commission,
             "plan": self.plan,
+            "provider": self.provider,
         }
 
     @staticmethod
@@ -59,6 +59,7 @@ class InvoicePojo:
         inv.p_phone = doc.get("p_phone", "")
         inv.commission = doc.get("commission", "")
         inv.plan = doc.get("plan", "")
+        inv.provider = doc.get("provider", "")
         return inv
 
     @staticmethod
@@ -89,6 +90,7 @@ class InvoicePojo:
                 "p_phone": self.p_phone,
                 "commission": self.commission,
                 "plan": self.plan,
+                "provider": self.provider,
             }}
         )
         return True

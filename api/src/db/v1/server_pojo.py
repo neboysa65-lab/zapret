@@ -4,8 +4,7 @@ from typing import Optional
 import motor.motor_asyncio
 from pydantic import BaseModel, Field
 
-MONGODB_URI = "mongodb://127.0.0.1:27017/?retryWrites=true&w=majority"
-DB_NAME = "GreyWebVPN"
+from src.config import MONGODB_URI, DB_NAME, get_db  # central config
 COLLECTION_NAME = "servers"
 
 
@@ -63,8 +62,7 @@ class ServerPojo:
 
     @staticmethod
     async def get_collection():
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
-        db = client[DB_NAME]
+        db = get_db()
         return db[COLLECTION_NAME]
 
     def to_doc(self) -> dict:

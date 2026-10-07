@@ -10,8 +10,8 @@ from starlette.responses import Response
 logger = logging.getLogger(__name__)
 
 ALLOWED_BUNDLE_IDS = [
-    "app.greywebs.vpn",           # Android
-    "com.greywebs.greywebsvpn",    # iOS
+    "app.rabochiy.vpn",    # Android / iOS — Rabochiy VPN (current)
+    "app.yarik.vpn",       # legacy builds installed before the rebrand
 ]
 EXPECTED_SECRET = "strongVPN!@#"
 MAX_TIME_DRIFT_SECONDS = 3600  # 1 час
@@ -25,7 +25,7 @@ class AndroidSignatureMiddleware(BaseHTTPMiddleware):
     Клиент отправляет в каждом POST-запросе:
       - hash: SHA-256 от "{unixtime}|strongVPN!@#"
       - time: Unix timestamp в секундах
-      - bundleId: "app.greywebs.vpn" (Android) или "com.greywebs.greywebsvpn" (iOS)
+      - bundleId: один из значений из ALLOWED_BUNDLE_IDS
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:

@@ -17,13 +17,11 @@ logger = logging.getLogger(__name__)
 async def create(request: Request):
     user = UserPojo()
     mnemonic = await crypto_user.generate_mnemonic()
-    xprv = await crypto_user.mnemonic_to_xprv(mnemonic)
-    user_id = xprv.public_key().to_bytes().hex()
+    user_id = await crypto_user.mnemonic_to_xprv(mnemonic)
     user.user_id = user_id
     while await user.is_exist():
         mnemonic = await crypto_user.generate_mnemonic()
-        xprv = await crypto_user.mnemonic_to_xprv(mnemonic)
-        user_id = xprv.public_key().to_bytes().hex()
+        user_id = await crypto_user.mnemonic_to_xprv(mnemonic)
         user.user_id = user_id
 
     user.created_at = int(time.time() * 1000)
@@ -179,10 +177,56 @@ async def update_traffic(request: Request):
         )
 
 
+async def delete(user_id: str = QueryParam(...)):
+    """
+    Permanently removes the user record. Called from the mobile client
+    when the user taps "Delete account" (with the dialog confirmation).
+    Returns 200 on success, 404 if the user_id is not found, 500 if
+    the delete operation reports zero affected rows on an existing
+    document (rare race condition).
+    """
+    user = UserPojo()
+    user.user_id = user_id
+    if not await user.is_exist():
+        logger.error(f"User: {user_id} delete request — not found")
+        return JSONResponse(
+            status_code=404,
+            content=ResponseJson(
+                success=False,
+                message=ResponseJsonMessage(
+                    status_code=404, info="User not found"
+                ),
+                data={},
+            ).to_dict(),
+        )
+    if await user.delete():
+        logger.info(f"User: {user_id} deleted")
+        return JSONResponse(
+            status_code=200,
+            content=ResponseJson(
+                success=True,
+                message=ResponseJsonMessage(
+                    status_code=200, info="User deleted"
+                ),
+                data={},
+            ).to_dict(),
+        )
+    logger.error(f"User: {user_id} delete failed")
+    return JSONResponse(
+        status_code=500,
+        content=ResponseJson(
+            success=False,
+            message=ResponseJsonMessage(
+                status_code=500, info="User delete failed"
+            ),
+            data={},
+        ).to_dict(),
+    )
+
+
 async def login(mnemonic: str = QueryParam(...)):
     user = UserPojo()
-    xprv = await crypto_user.mnemonic_to_xprv(mnemonic)
-    user_id = xprv.public_key().to_bytes().hex()
+    user_id = await crypto_user.mnemonic_to_xprv(mnemonic)
     user.user_id = user_id
     if await user.is_exist():
         user = await user.find_by_user_id()

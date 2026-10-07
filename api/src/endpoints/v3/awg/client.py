@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter, Request
 from src.db.v3.awg.server_pojo import ServerPojo
-from src.db.v1.user_pojo import UserPojo
+from src.db.v3.user.user_pojo import UserPojo
 from src.utils.awg_provisioner import get_personal_configs
 
 logger = logging.getLogger(__name__)
@@ -25,16 +25,12 @@ async def get_servers_awg(request: Request):
             return {"success": 0, "message": "userId required", "data": []}
 
         user = UserPojo()
-        user.id = user_id
-        user.device_id = user_id
-        user.source_ip = user_ip
-        user.email = user_id
+        user.user_id = user_id
+        user = await user.find_by_user_id()
 
-        if await user.is_exist():
-            user = await user.find()
-        else:
-            await user.insert()
-            user = await user.find()
+        is_premium = False
+        if user:
+            is_premium = user.is_premium
 
         servers = await ServerPojo.find_all()
 
@@ -43,7 +39,7 @@ async def get_servers_awg(request: Request):
         eligible_ips = [
             s.ip_address
             for s in servers
-            if s.status and not (s.premium and not user.is_premium)
+            if s.status and not (s.premium and not is_premium)
         ]
 
         # Персональные конфиги: кэш -> агент на VPS -> (None = общий конфиг).
@@ -56,9 +52,10 @@ async def get_servers_awg(request: Request):
             logger.error(f"Personal AWG config provisioning failed: {e}")
 
         servers_json = []
+
         for server in servers:
             if server.status:
-                if server.premium and not user.is_premium:
+                if server.premium and not is_premium:
                     # Strip config for premium servers if user is not premium
                     doc = server.to_doc()
                     doc["config"] = ""

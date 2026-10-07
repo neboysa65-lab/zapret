@@ -14,10 +14,10 @@ from src.endpoints.v3.danger.user import user as danger_user
 from src.endpoints.v3.danger.user import traffic as danger_traffic
 
 from src.endpoints.v3.client import user as client_user
-from src.endpoints.v3.client import servers as client_servers
 from src.endpoints.v3.client import tariff as client_tariff
 from src.endpoints.v3.client import code as client_code
 from src.endpoints.v3.client import client_transfer
+from src.endpoints.v3.client import payments as client_payments
 
 from src.endpoints.v3.admin import user as admin_user
 from src.endpoints.v3.admin import info as admin_info
@@ -29,11 +29,9 @@ from src.endpoints.v3.a3xui.admin import admin as a3xui_admin
 from src.endpoints.v3.a3xui.admin import upload_file as a3xui_upload_file
 
 from src.endpoints.v3.awg import bot_api as awg_bot_api
-from src.endpoints.v3.awg import client as awg_client_api
-from src.endpoints.v3.awg import agent_api as awg_agent_api
-
 from src.endpoints.v3.gw import bot_api as gw_bot_api
 from src.endpoints.v3.gw import client as gw_client_api
+from src.endpoints.v3.awg import client as awg_client_api
 
 app = FastAPI()
 
@@ -85,6 +83,7 @@ app.add_api_route("/vpn/api/v1/bot/servers/create", bot_api.bot_create_server, m
 app.add_api_route("/vpn/api/v1/bot/servers/update", bot_api.bot_update_server, methods=["POST"])
 app.add_api_route("/vpn/api/v1/bot/servers/delete", bot_api.bot_delete_server, methods=["POST"])
 app.add_api_route("/vpn/api/v1/bot/servers/toggle", bot_api.bot_toggle_server, methods=["POST"])
+app.add_api_route("/vpn/api/v1/bot/servers/toggle_premium", bot_api.bot_toggle_server_premium, methods=["POST"])
 app.add_api_route("/vpn/api/v1/bot/servers_vless/all", bot_api.bot_get_all_servers_vless, methods=["GET"])
 app.add_api_route("/vpn/api/v1/bot/servers_vless/get", bot_api.bot_get_server_vless, methods=["GET"])
 app.add_api_route("/vpn/api/v1/bot/servers_vless/create", bot_api.bot_create_server_vless, methods=["POST"])
@@ -119,15 +118,16 @@ app.add_api_route("/vpn/api/v3/client/user/get", client_user.get, methods=["GET"
 app.add_api_route("/vpn/api/v3/client/user/updatetraffic", client_user.update_traffic, methods=["PUT"])
 app.add_api_route("/vpn/api/v3/client/user/login", client_user.login, methods=["GET"])
 app.add_api_route("/vpn/api/v3/client/user/activatecode", client_user.activate_code, methods=["PUT"])
+app.add_api_route("/vpn/api/v3/client/user/delete", client_user.delete, methods=["DELETE"])
 
 # /vpn/api/v3/client/servers/...
-app.add_api_route("/vpn/api/v3/client/servers/get", client_servers.get_servers, methods=["GET"])
 
 # /vpn/api/v3/client/tariff/...
 app.add_api_route("/vpn/api/v3/client/tariff/get", client_tariff.get_tariff, methods=["GET"])
 
 # /vpn/api/v3/client/payments/...
 app.add_api_route("/vpn/api/v3/client/payments/getpayurl", get_pay_url.get_pay_url, methods=["POST"])
+app.include_router(client_payments.router)
 
 # /vpn/api/v3/client/code/...
 app.add_api_route("/vpn/api/v3/client/code/getall", client_code.get_all_user_codes, methods=["GET"])
@@ -180,9 +180,6 @@ app.add_api_route("/vpn/api/v3/3xui/admin/upload", a3xui_upload_file.upload_file
 
 # AWG Bot APIs
 app.include_router(awg_bot_api.router)
-app.include_router(awg_client_api.router)
-app.include_router(awg_agent_api.router)
-
-# GW Bot APIs
 app.include_router(gw_bot_api.router)
 app.include_router(gw_client_api.router)
+app.include_router(awg_client_api.router)

@@ -1,24 +1,13 @@
 import time
 from typing import Any, Dict, List, Optional
 
-import motor.motor_asyncio
+from src.config import get_db
 
-MONGODB_URI = "mongodb://127.0.0.1:27017/?retryWrites=true&w=majority"
-DB_NAME = "GreyWebVPN"
 COLLECTION_NAME = "servers_gw"
-
-_mongo_client: motor.motor_asyncio.AsyncIOMotorClient | None = None
 
 
 def _collection():
-    global _mongo_client
-    if _mongo_client is None:
-        _mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
-            MONGODB_URI,
-            maxPoolSize=50,
-            minPoolSize=0,
-        )
-    return _mongo_client[DB_NAME][COLLECTION_NAME]
+    return get_db()[COLLECTION_NAME]
 
 
 class ServerPojo:
@@ -150,13 +139,17 @@ class ServerPojo:
 
     @staticmethod
     async def find_all() -> List["ServerPojo"]:
-        cur = _collection().find().sort("priority", 1)
-        return [ServerPojo.from_doc(d) async for d in cur]
+        cursor = _collection().find({})
+        docs = [d async for d in cursor]
+        docs.sort(key=lambda d: d.get("priority", 0) or 0)
+        return [ServerPojo.from_doc(d) for d in docs]
 
     @staticmethod
     async def find_enabled() -> List["ServerPojo"]:
-        cur = _collection().find({"status": True}).sort("priority", 1)
-        return [ServerPojo.from_doc(d) async for d in cur]
+        cursor = _collection().find({"status": True})
+        docs = [d async for d in cursor]
+        docs.sort(key=lambda d: d.get("priority", 0) or 0)
+        return [ServerPojo.from_doc(d) for d in docs]
 
     async def delete(self) -> None:
         await _collection().delete_one({"ip_address": self.ip_address})

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
@@ -20,14 +21,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-PAYMENT_API_BASE = "https://api.wata.pro/api/h2h"
-PAYMENT_ACCESS_TOKEN = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJQdWJsaWNJZCI6IjNhMWM0MTk2LTk0Y2MtNGYxNS0xNDY4LWI0Mzc2MGE0NjViYiIs"
-    "IlRva2VuVmVyc2lvbiI6IjMiLCJleHAiOjE4MDY0MjEzMTksImlzcyI6Imh0dHBzOi8v"
-    "YXBpLndhdGEucHJvIiwiYXVkIjoiaHR0cHM6Ly9hcGkud2F0YS5wcm8vYXBpL2gyaCJ9."
-    "RlC9w749wNR1Jfq8Ok-CzwXp7ThQHQ9LVoEP7xqhJPg"
-)
+PAYMENT_API_BASE = os.getenv("WATA_API_BASE", "https://api.wata.pro/api/h2h")
+# The token must be provided via the WATA_API_TOKEN environment variable.
+# There is deliberately NO built-in fallback: the previous hardcoded token
+# belonged to another product's WATA terminal, and sharing a terminal
+# breaks webhook routing for both services (a terminal has exactly one
+# webhook URL). Empty token => all payment endpoints respond 503.
+PAYMENT_ACCESS_TOKEN = os.getenv("WATA_API_TOKEN", "").strip()
+PAYMENTS_ENABLED = bool(PAYMENT_ACCESS_TOKEN)
 
 
 class PaymentLinkRequest(BaseModel):
@@ -41,6 +42,8 @@ class PaymentLinkRequest(BaseModel):
 
 
 async def create_payment_link(request: PaymentLinkRequest) -> dict:
+    if not PAYMENTS_ENABLED:
+        raise Exception("payments disabled: WATA_API_TOKEN is not configured")
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {PAYMENT_ACCESS_TOKEN}",

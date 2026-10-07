@@ -4,23 +4,10 @@ from typing import Optional
 import motor.motor_asyncio
 from pydantic import BaseModel, Field
 
-from src.utils.platform import (
-    PLATFORM_UNKNOWN,
-    bundle_id_to_platform,
-    normalize_platform,
-    now_utc,
-)
-
-MONGODB_URI = "mongodb://127.0.0.1:27017/?retryWrites=true&w=majority"
-DB_NAME = "GreyWebVPN"
+from src.config import MONGODB_URI, DB_NAME, get_db  # central config
 COLLECTION_NAME = "users"
 
 DATE_FORMAT = "%a %b %d %H:%M:%S %Z %Y"
-
-# Один клиент Mongo на весь процесс.
-# РАНЬШЕ: на каждый find/update создавался новый AsyncIOMotorClient —
-# при частых вызовах это съедало соединения/FD и роняло API.
-_mongo_client: motor.motor_asyncio.AsyncIOMotorClient | None = None
 
 
 class UserJson(BaseModel):
@@ -91,46 +78,10 @@ class UserPojo:
         self.last_login: datetime = kwargs.get("last_login", datetime.now(timezone.utc))
         self.is_premium: bool = kwargs.get("is_premium", False)
         self.premium_end: datetime = kwargs.get("premium_end", datetime.now(timezone.utc))
-        # android | ios | unknown — заполняется только с login/profile
-        self.platform: str = normalize_platform(kwargs.get("platform", PLATFORM_UNKNOWN))
-        self.bundle_id: str = kwargs.get("bundle_id", "") or ""
-        self.first_platform: str = normalize_platform(
-            kwargs.get("first_platform", self.platform or PLATFORM_UNKNOWN)
-        )
-        self.platform_updated_at: Optional[datetime] = kwargs.get("platform_updated_at")
 
     @staticmethod
     def now() -> datetime:
         return datetime.now(timezone.utc)
-
-    def apply_bundle_id(self, bundle_id: Optional[str]) -> bool:
-        """Обновить platform из bundleId. Вызывать только с login/profile.
-
-        Returns True, если что-то изменилось.
-        Не затирает известную платформу пустым/чужим bundleId.
-        """
-        if not bundle_id:
-            return False
-        bundle_id = bundle_id.strip()
-        if not bundle_id:
-            return False
-        platform = bundle_id_to_platform(bundle_id)
-        if platform == PLATFORM_UNKNOWN:
-            return False
-
-        changed = False
-        if self.bundle_id != bundle_id:
-            self.bundle_id = bundle_id
-            changed = True
-        if self.platform != platform:
-            self.platform = platform
-            changed = True
-        if not self.first_platform or self.first_platform == PLATFORM_UNKNOWN:
-            self.first_platform = platform
-            changed = True
-        if changed:
-            self.platform_updated_at = now_utc()
-        return changed
 
     def premium_end_millis(self) -> int:
         if isinstance(self.premium_end, datetime):
@@ -145,22 +96,15 @@ class UserPojo:
 
     @staticmethod
     async def get_collection():
-        """Коллекция users. Клиент Mongo — один на процесс (singleton)."""
-        global _mongo_client
-        if _mongo_client is None:
-            _mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
-                MONGODB_URI,
-                maxPoolSize=50,
-                minPoolSize=0,
-            )
-        return _mongo_client[DB_NAME][COLLECTION_NAME]
+        db = get_db()
+        return db[COLLECTION_NAME]
 
     def clean_ids(self):
         self.device_id = self.device_id.replace("\r", "").replace("\n", "").strip()
         self.id = self.id.replace("\r", "").replace("\n", "").strip()
 
     def to_doc(self) -> dict:
-        doc = {
+        return {
             "_id": self.id,
             "isAnonymous": self.is_anonymous,
             "totalDownload": self.total_download,
@@ -173,13 +117,7 @@ class UserPojo:
             "lastLogin": self.last_login,
             "isPremium": self.is_premium,
             "premiumEnd": self.premium_end,
-            "platform": normalize_platform(self.platform),
-            "bundleId": self.bundle_id or "",
-            "firstPlatform": normalize_platform(self.first_platform),
         }
-        if self.platform_updated_at is not None:
-            doc["platformUpdatedAt"] = self.platform_updated_at
-        return doc
 
     @staticmethod
     def from_doc(doc: dict) -> "UserPojo":
@@ -196,19 +134,6 @@ class UserPojo:
         user.last_login = doc.get("lastLogin", datetime.now(timezone.utc))
         user.is_premium = doc.get("isPremium", False)
         user.premium_end = doc.get("premiumEnd", datetime.now(timezone.utc))
-        user.platform = normalize_platform(doc.get("platform", PLATFORM_UNKNOWN))
-        user.bundle_id = doc.get("bundleId", "") or ""
-        user.first_platform = normalize_platform(
-            doc.get("firstPlatform", user.platform or PLATFORM_UNKNOWN)
-        )
-        user.platform_updated_at = doc.get("platformUpdatedAt")
-        # Восстановить platform из bundleId, если поле ещё пустое
-        if user.platform == PLATFORM_UNKNOWN and user.bundle_id:
-            mapped = bundle_id_to_platform(user.bundle_id)
-            if mapped != PLATFORM_UNKNOWN:
-                user.platform = mapped
-                if user.first_platform == PLATFORM_UNKNOWN:
-                    user.first_platform = mapped
         return user
 
     async def insert(self) -> bool:

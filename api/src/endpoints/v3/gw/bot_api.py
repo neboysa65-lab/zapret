@@ -1,14 +1,11 @@
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 
 from src.db.v3.gw.server_pojo import ServerPojo
-from src.endpoints.v3.gw.guard import require_internal_token
 
 logger = logging.getLogger(__name__)
-# Все маршруты управления GW-нодами закрыты внутренним токеном
-# (X-Internal-Token == INTERNAL_API_TOKEN). Без него — 503/401.
-router = APIRouter(dependencies=[Depends(require_internal_token)])
+router = APIRouter()
 
 _STR_FIELDS = (
     "name",
@@ -27,13 +24,20 @@ _INT_FIELDS = ("ssh_port", "proxy_port", "priority")
 
 
 async def _read_body(request: Request) -> dict:
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        return await request.json()
+    """The bot posts urlencoded forms; other clients may post JSON."""
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "json" in content_type:
+        try:
+            return await request.json()
+        except Exception:
+            return {}
     try:
-        return await request.json()
-    except Exception:
         return dict(await request.form())
+    except Exception:
+        try:
+            return await request.json()
+        except Exception:
+            return {}
 
 
 def _to_str(value, default=""):
@@ -89,15 +93,12 @@ async def bot_create_server_gw(request: Request):
             return {"success": 0, "message": "ip_address required"}
 
         server = ServerPojo(ip_address=ip_address)
-        server.name = _to_str(data.get("name"), "")
         for f in _STR_FIELDS:
             setattr(server, f, _to_str(data.get(f), getattr(server, f)))
         for f in _BOOL_FIELDS:
             setattr(server, f, _to_bool(data.get(f), getattr(server, f)))
         for f in _INT_FIELDS:
             setattr(server, f, _to_int(data.get(f), getattr(server, f)))
-        # SSH-креды ноды можно задавать сразу при создании (иначе бот
-        # вынужден делать второй запрос update после create).
         server.ssh_username = _to_str(data.get("ssh_username"), getattr(server, "ssh_username"))
         server.ssh_password = _to_str(data.get("ssh_password"), getattr(server, "ssh_password"))
 

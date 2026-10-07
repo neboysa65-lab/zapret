@@ -11,27 +11,50 @@ class MessageBot:
         self.message = message
 
 
+def _log_dir() -> str:
+    """Writable log directory for any platform.
+
+    Docker/VPS keeps the classic path; on serverless runtimes the
+    filesystem is read-only outside temp, so fall back gracefully.
+    """
+    base = os.getenv("RABOCHIY_LOG_DIR")
+    if not base:
+        base = "/var/log/rabochiy/"
+    try:
+        os.makedirs(base, exist_ok=True)
+        probe = os.path.join(base, ".write_test")
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+    except Exception:
+        base = os.path.join("/tmp", "rabochiy-logs")
+        os.makedirs(base, exist_ok=True)
+    return base
+
+
 def init_panic_handler():
     def exception_handler(exc_type, exc_value, exc_traceback):
-        log_dir = "/var/log/gwvpn/"
-        os.makedirs(log_dir, exist_ok=True)
-        
+        try:
+            log_dir = _log_dir()
+        except Exception:
+            log_dir = "/tmp"
+
         message = str(exc_value) if exc_value else "Unknown panic occurred!"
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         log_output = f"Panic occurred: {message} ::::: {timestamp}\n"
-        
+
         tb_str = "".join(traceback.format_tb(exc_traceback))
         if tb_str:
             log_output += f"{tb_str}\n"
-        
+
         try:
             with open(os.path.join(log_dir, "panic.log"), "a") as f:
                 f.write(log_output)
         except Exception:
             pass
-        
+
         print(f"Panic occurred: {message} ::::: {timestamp}")
-    
+
     sys.excepthook = exception_handler
 
 
@@ -41,35 +64,29 @@ class FileAndConsoleHandler(logging.Handler):
         self.log_file_path = log_file_path
         log_dir = os.path.dirname(log_file_path)
         os.makedirs(log_dir, exist_ok=True)
-    
+
     def emit(self, record):
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         log_message = f"{record.levelname} - {record.getMessage()} :::: {timestamp}"
-        
+
         print(log_message)
-        
+
         try:
             with open(self.log_file_path, "a") as f:
                 f.write(log_message + "\n")
         except Exception:
             pass
-        
+
         if record.levelno >= logging.ERROR:
             print(f"Critical error occurred: {record.getMessage()}")
 
 
 def init_logger():
-    log_dir = "/var/log/gwvpn/"
-    os.makedirs(log_dir, exist_ok=True)
-    
-    handler = FileAndConsoleHandler(os.path.join(log_dir, "app.log"))
-    handler.setLevel(logging.DEBUG)
-    
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
-    root_logger.addHandler(handler)
+    log_dir = _log_dir()
 
-    logging.getLogger("motor").setLevel(logging.WARNING)
-    logging.getLogger("pymongo").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    handler = FileAndConsoleHandler(os.path.join(log_dir, "app.log"))
+    handler.setLevel(logging.CRITICAL)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.CRITICAL)
+    root_logger.addHandler(handler)

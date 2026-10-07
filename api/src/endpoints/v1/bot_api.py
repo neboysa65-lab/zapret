@@ -4,12 +4,11 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from src.db.v1.user_pojo import UserPojo, UserJson
-from src.db.v1.server_pojo import ServerPojo, ServerJson
+from src.db.v3.user.user_pojo import UserPojo
+from src.db.v3.servers.server_pojo import ServerPojo
 from src.db.v1.invoice_pojo import InvoicePojo, InvoiceJson
 from src.db.v2.tariff_pojo import TariffPojo
 from src.utils.crypto_user import mnemonic_to_device_id
-from src.utils.platform import PLATFORM_UNKNOWN, normalize_platform
 
 logger = logging.getLogger(__name__)
 
@@ -19,78 +18,58 @@ DATE_FORMAT = "%a %b %d %H:%M:%S %Z %Y"
 
 
 def _fmt(dt) -> str:
+    if isinstance(dt, (int, float)):
+        dt = datetime.fromtimestamp(dt / 1000.0, tz=timezone.utc)
     if isinstance(dt, datetime):
         return dt.strftime(DATE_FORMAT)
     return str(dt)
 
 
-def _user_list_fields(u: UserPojo) -> dict:
-    """Общие поля юзера для списка / поиска / карточки (панель + бот)."""
-    return {
-        "id": u.id,
-        "email": u.email,
-        "isAnonymous": u.is_anonymous,
-        "isPremium": u.is_premium,
-        "premiumEnd": _fmt(u.premium_end),
-        "createdAt": _fmt(u.created_at),
-        "lastLogin": _fmt(u.last_login),
-        "totalUpload": u.total_upload,
-        "totalDownload": u.total_download,
-        "countryCode": u.country_code,
-        "deviceId": u.device_id,
-        "platform": normalize_platform(getattr(u, "platform", PLATFORM_UNKNOWN)),
-        "bundleId": getattr(u, "bundle_id", "") or "",
-        "firstPlatform": normalize_platform(
-            getattr(u, "first_platform", PLATFORM_UNKNOWN)
-        ),
-    }
-
-
-def _empty_platform_bucket() -> dict:
-    return {
-        "total": 0,
-        "premium": 0,
-        "free": 0,
-        "new24h": 0,
-        "active24h": 0,
-        "onlineNow": 0,
-        "onlinePremium": 0,
-        "onlineFree": 0,
-    }
-
-
 # ─── USERS ─────────────────────────────────────
 
 @router.get("/vpn/api/v1/bot/users/all")
-async def bot_get_all_users(skip: int = 0, limit: int = 20, platform: str = ""):
-    """Список юзеров. platform=android|ios|unknown — опциональный фильтр."""
+async def bot_get_all_users(skip: int = 0, limit: int = 20):
     all_users = await UserPojo.find_all()
-    plat = normalize_platform(platform) if platform else ""
-    if platform and plat in ("android", "ios", "unknown"):
-        all_users = [
-            u for u in all_users
-            if normalize_platform(getattr(u, "platform", PLATFORM_UNKNOWN)) == plat
-        ]
     total = len(all_users)
     page = all_users[skip:skip + limit]
-    data = [_user_list_fields(u) for u in page]
+    data = []
+    for u in page:
+        data.append({
+            "id": u.user_id,
+            "email": "0",
+            "isAnonymous": True,
+            "isPremium": u.is_premium,
+            "premiumEnd": _fmt(u.premium_end),
+            "createdAt": _fmt(u.created_at),
+            "lastLogin": _fmt(u.last_login),
+            "totalUpload": u.total_upload,
+            "totalDownload": u.total_download,
+            "countryCode": "0",
+        })
     return {"success": 1, "total": total, "skip": skip, "limit": limit, "data": data}
 
 
 @router.get("/vpn/api/v1/bot/users/search")
-async def bot_search_user(q: str = "", platform: str = ""):
+async def bot_search_user(q: str = ""):
     if not q:
         return {"success": 0, "message": "query required", "data": []}
     all_users = await UserPojo.find_all()
     results = []
     q_lower = q.lower()
-    plat = normalize_platform(platform) if platform else ""
     for u in all_users:
-        if q_lower in u.id.lower() or q_lower in u.email.lower() or q_lower in u.device_id.lower():
-            if platform and plat in ("android", "ios", "unknown"):
-                if normalize_platform(getattr(u, "platform", PLATFORM_UNKNOWN)) != plat:
-                    continue
-            results.append(_user_list_fields(u))
+        if q_lower in u.user_id.lower():
+            results.append({
+                "id": u.user_id,
+                "email": "0",
+                "isAnonymous": True,
+                "isPremium": u.is_premium,
+                "premiumEnd": _fmt(u.premium_end),
+                "createdAt": _fmt(u.created_at),
+                "lastLogin": _fmt(u.last_login),
+                "totalUpload": u.total_upload,
+                "totalDownload": u.total_download,
+                "countryCode": "0",
+            })
     return {"success": 1, "total": len(results), "data": results}
 
 
@@ -99,12 +78,12 @@ async def bot_get_user(device_id: str = ""):
     if not device_id:
         return {"success": 0, "message": "device_id required", "data": {}}
     user = UserPojo()
-    user.device_id = device_id
-    user = await user.find()
+    user.user_id = device_id
+    user = await user.find_by_user_id()
     if user is None:
         return {"success": 0, "message": "user not found", "data": {}}
     invoices = InvoicePojo()
-    invoices.user_id = user.id
+    invoices.user_id = user.user_id
     inv_list = await invoices.find_all_by_user_id()
     inv_data = []
     for inv in inv_list:
@@ -115,14 +94,23 @@ async def bot_get_user(device_id: str = ""):
             "plan": inv.plan,
             "created": _fmt(inv.created),
         })
-    data = _user_list_fields(user)
-    data["sourceIp"] = user.source_ip
-    data["invoices"] = inv_data
-    pua = getattr(user, "platform_updated_at", None)
-    data["platformUpdatedAt"] = _fmt(pua) if pua else ""
     return {
         "success": 1,
-        "data": data,
+        "data": {
+            "id": user.user_id,
+            "email": "0",
+            "isAnonymous": True,
+            "isPremium": user.is_premium,
+            "premiumEnd": _fmt(user.premium_end),
+            "createdAt": _fmt(user.created_at),
+            "lastLogin": _fmt(user.last_login),
+            "totalUpload": user.total_upload,
+            "totalDownload": user.total_download,
+            "countryCode": "0",
+            "deviceId": user.user_id,
+            "sourceIp": user.source_ip,
+            "invoices": inv_data,
+        },
     }
 
 
@@ -139,8 +127,8 @@ async def bot_set_premium(request: Request):
     if not device_id:
         return {"success": 0, "message": "deviceId required"}
     user = UserPojo()
-    user.device_id = device_id
-    user = await user.find()
+    user.user_id = device_id
+    user = await user.find_by_user_id()
     if user is None:
         return {"success": 0, "message": "user not found"}
     try:
@@ -148,7 +136,7 @@ async def bot_set_premium(request: Request):
     except ValueError:
         days_int = 30
     user.is_premium = True
-    user.premium_end = datetime.now(timezone.utc) + timedelta(days=days_int)
+    user.premium_end = int((datetime.now(timezone.utc) + timedelta(days=days_int)).timestamp() * 1000)
     await user.update()
     return {"success": 1, "message": f"Premium set for {days_int} days", "premiumEnd": _fmt(user.premium_end)}
 
@@ -165,67 +153,32 @@ async def bot_revoke_premium(request: Request):
     if not device_id:
         return {"success": 0, "message": "deviceId required"}
     user = UserPojo()
-    user.device_id = device_id
-    user = await user.find()
+    user.user_id = device_id
+    user = await user.find_by_user_id()
     if user is None:
         return {"success": 0, "message": "user not found"}
     user.is_premium = False
-    user.premium_end = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    user.premium_end = 0
     await user.update()
     return {"success": 1, "message": "Premium revoked"}
 
 
 # ─── ANALYTICS ─────────────────────────────────
 
-def _ensure_aware(dt):
-    if isinstance(dt, datetime) and dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
 @router.get("/vpn/api/v1/bot/analytics/summary")
 async def bot_analytics_summary():
-    """Сводка + byPlatform. find_all был и раньше — не добавляем heartbeat-нагрузку."""
     all_users = await UserPojo.find_all()
     total = len(all_users)
     premium = sum(1 for u in all_users if u.is_premium)
     free = total - premium
     now = datetime.now(timezone.utc)
-    day_ago = now - timedelta(hours=24)
-    five_min_ago = now - timedelta(minutes=5)
-    new_24h = sum(1 for u in all_users if _ensure_aware(u.created_at) >= day_ago)
-    active_24h = sum(1 for u in all_users if _ensure_aware(u.last_login) >= day_ago)
-    online_now = sum(1 for u in all_users if _ensure_aware(u.last_login) >= five_min_ago)
-    online_premium = sum(1 for u in all_users if u.is_premium and _ensure_aware(u.last_login) >= five_min_ago)
+    day_ago_ms = int((now - timedelta(hours=24)).timestamp() * 1000)
+    five_min_ago_ms = int((now - timedelta(minutes=5)).timestamp() * 1000)
+    new_24h = sum(1 for u in all_users if u.created_at >= day_ago_ms)
+    active_24h = sum(1 for u in all_users if u.last_login >= day_ago_ms)
+    online_now = sum(1 for u in all_users if u.last_login >= five_min_ago_ms)
+    online_premium = sum(1 for u in all_users if u.is_premium and u.last_login >= five_min_ago_ms)
     online_free = online_now - online_premium
-
-    # Разбивка по platform (старые поля summary сохранены для совместимости)
-    by_platform = {
-        "android": _empty_platform_bucket(),
-        "ios": _empty_platform_bucket(),
-        "unknown": _empty_platform_bucket(),
-    }
-    for u in all_users:
-        key = normalize_platform(getattr(u, "platform", PLATFORM_UNKNOWN))
-        if key not in by_platform:
-            key = "unknown"
-        b = by_platform[key]
-        b["total"] += 1
-        if u.is_premium:
-            b["premium"] += 1
-        else:
-            b["free"] += 1
-        if _ensure_aware(u.created_at) >= day_ago:
-            b["new24h"] += 1
-        if _ensure_aware(u.last_login) >= day_ago:
-            b["active24h"] += 1
-        if _ensure_aware(u.last_login) >= five_min_ago:
-            b["onlineNow"] += 1
-            if u.is_premium:
-                b["onlinePremium"] += 1
-            else:
-                b["onlineFree"] += 1
-
     return {
         "success": 1,
         "data": {
@@ -237,7 +190,6 @@ async def bot_analytics_summary():
             "onlineNow": online_now,
             "onlinePremium": online_premium,
             "onlineFree": online_free,
-            "byPlatform": by_platform,
         },
     }
 
@@ -252,7 +204,7 @@ async def bot_get_all_servers():
         data.append({
             "id": s.ip_address,
             "country": s.country,
-            "countryCode": s.country_code,
+            "countryCode": "0",
             "ipAddress": s.ip_address,
             "premium": s.premium,
             "status": s.status,
@@ -275,15 +227,15 @@ async def bot_get_server(ip_address: str = ""):
                 "data": {
                     "ipAddress": s.ip_address,
                     "country": s.country,
-                    "countryCode": s.country_code,
+                    "countryCode": "0",
                     "state": s.state,
                     "premium": s.premium,
                     "status": s.status,
                     "recommend": s.recommend,
                     "priority": s.priority,
-                    "u_nsm": s.u_nsm,
-                    "p_nsm": s.p_nsm,
-                    "caFileName": s.ca_file_name,
+                    "u_nsm": s.user,
+                    "p_nsm": s.password,
+                    "caFileName": "0",
                     "caFile": s.ca_file,
                 },
             }
@@ -311,13 +263,10 @@ async def bot_create_server(request: Request):
 
     server = ServerPojo()
     server.ip_address = ip_address
-    server.id = params.get("_id", ip_address)
     server.country = params.get("country", "")
-    server.country_code = params.get("countryCode", "")
     server.state = params.get("state", "")
-    server.u_nsm = params.get("u_nsm", "")
-    server.p_nsm = params.get("p_nsm", "")
-    server.ca_file_name = params.get("caFileName", "")
+    server.user = params.get("u_nsm", "")
+    server.password = params.get("p_nsm", "")
     server.ca_file = params.get("caFile", "")
     server.premium = params.get("premium", "false").lower() in ("true", "1")
     server.status = params.get("status", "true").lower() in ("true", "1")
@@ -362,9 +311,9 @@ async def bot_update_server(request: Request):
     if "state" in params:
         server.state = params["state"]
     if "u_nsm" in params:
-        server.u_nsm = params["u_nsm"]
+        server.user = params["u_nsm"]
     if "p_nsm" in params:
-        server.p_nsm = params["p_nsm"]
+        server.password = params["p_nsm"]
     if "caFileName" in params:
         server.ca_file_name = params["caFileName"]
     if "caFile" in params:
@@ -426,6 +375,29 @@ async def bot_toggle_server(request: Request):
             s.status = not s.status
             await s.update()
             return {"success": 1, "message": f"Server {'enabled' if s.status else 'disabled'}"}
+
+    return {"success": 0, "message": "server not found"}
+
+
+@router.post("/vpn/api/v1/bot/servers/toggle_premium")
+async def bot_toggle_server_premium(request: Request):
+    body = await request.body()
+    params: dict[str, str] = {}
+    for pair in body.decode("utf-8").split("&"):
+        parts = pair.split("=", 1)
+        if len(parts) == 2:
+            params[parts[0]] = parts[1]
+
+    ip_address = params.get("ipAddress", "").strip()
+    if not ip_address:
+        return {"success": 0, "message": "ipAddress is required"}
+
+    all_servers = await ServerPojo.find_all()
+    for s in all_servers:
+        if s.ip_address == ip_address:
+            s.premium = not s.premium
+            await s.update()
+            return {"success": 1, "message": f"Server premium {'enabled' if s.premium else 'disabled'}"}
 
     return {"success": 0, "message": "server not found"}
 
@@ -551,20 +523,13 @@ async def bot_update_server_vless(request: Request):
 
 @router.post("/vpn/api/v1/bot/servers_vless/delete")
 async def bot_delete_server_vless(request: Request):
-    """Удаление VLESS-сервера из панели.
-
-    Важно: body form-urlencoded — декодируем (иначе server_ip с ':'
-    приходит как %3A и не находится → «server not found»).
-    """
-    from urllib.parse import unquote_plus
     from src.db.v3.a3xui.server_pojo import ServerPojo as VlessServerPojo
-
     body = await request.body()
     params: dict[str, str] = {}
     for pair in body.decode("utf-8").split("&"):
         parts = pair.split("=", 1)
         if len(parts) == 2:
-            params[unquote_plus(parts[0])] = unquote_plus(parts[1])
+            params[parts[0]] = parts[1]
 
     server_ip = params.get("server_ip", "").strip()
     if not server_ip:
@@ -572,27 +537,11 @@ async def bot_delete_server_vless(request: Request):
 
     all_servers = await VlessServerPojo.find_all()
     for s in all_servers:
-        db_ip = (s.server_ip or "").strip()
-        if not db_ip:
-            continue
-        # точное совпадение после URL-decode
-        if db_ip == server_ip:
-            await s.delete()
-            return {"success": 1, "message": "Server deleted"}
-        # domain:port vs domain — если один «расширяет» другой
-        if db_ip == server_ip.split(":")[0] or server_ip == db_ip.split(":")[0]:
-            await s.delete()
-            return {"success": 1, "message": "Server deleted"}
-        if db_ip.lower() == server_ip.lower():
+        if s.server_ip == server_ip:
             await s.delete()
             return {"success": 1, "message": "Server deleted"}
 
-    return {
-        "success": 0,
-        "message": "server not found",
-        "server_ip": server_ip,
-        "known": [s.server_ip for s in all_servers],
-    }
+    return {"success": 0, "message": "server not found"}
 
 # ─── TARIFFS ───────────────────────────────────
 
@@ -781,9 +730,9 @@ async def bot_search_by_mnemonic(mnemonic: str = ""):
 
     all_users = await UserPojo.find_all()
     for u in all_users:
-        if u.device_id == device_id:
+        if u.user_id == device_id:
             invoices = InvoicePojo()
-            invoices.user_id = u.id
+            invoices.user_id = u.user_id
             inv_list = await invoices.find_all_by_user_id()
             inv_data = []
             for inv in inv_list:
@@ -797,17 +746,17 @@ async def bot_search_by_mnemonic(mnemonic: str = ""):
             return {
                 "success": 1,
                 "data": {
-                    "id": u.id,
-                    "email": u.email,
-                    "isAnonymous": u.is_anonymous,
+                    "id": u.user_id,
+                    "email": "0",
+                    "isAnonymous": True,
                     "isPremium": u.is_premium,
                     "premiumEnd": _fmt(u.premium_end),
                     "createdAt": _fmt(u.created_at),
                     "lastLogin": _fmt(u.last_login),
                     "totalUpload": u.total_upload,
                     "totalDownload": u.total_download,
-                    "countryCode": u.country_code,
-                    "deviceId": u.device_id,
+                    "countryCode": "0",
+                    "deviceId": u.user_id,
                     "sourceIp": u.source_ip,
                     "invoices": inv_data,
                 },

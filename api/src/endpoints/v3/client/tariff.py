@@ -2,7 +2,7 @@ import logging
 
 from starlette.responses import JSONResponse
 
-from src.db.v3.payments.tariff_pojo import TariffPojo
+from src.db.v2.tariff_pojo import TariffPojo
 from src.endpoints.response_object import ResponseJson, ResponseJsonMessage
 
 logger = logging.getLogger(__name__)

@@ -2,8 +2,9 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
+import time
 
-from src.db.v1.server_pojo import ServerPojo
+from src.db.v3.servers.server_pojo import ServerPojo
 
 logger = logging.getLogger(__name__)
 
@@ -34,32 +35,30 @@ async def add_server(request: Request):
     )
 
     server = ServerPojo()
-    server.id = params_map["ipAddress"]
     server.ip_address = params_map["ipAddress"]
     server.country = params_map["country"]
     server.priority = int(params_map["priority"])
-    server.u_nsm = params_map["u_nsm"]
-    server.p_nsm = params_map["p_nsm"]
-    server.ca_file_name = params_map["caFileName"]
+    server.user = params_map["u_nsm"]
+    server.password = params_map["p_nsm"]
     server.ca_file = ca_file
     server.country_code = params_map["countryCode"].lower()
     server.state = params_map["state"]
     server.recommend = recommend
     server.premium = premium
     server.status = enable
-    server.created_at = datetime.now(timezone.utc)
+    server.created_at = int(time.time() * 1000)
 
     result = await server.insert()
 
     if result:
-        logger.info("Server: %s added", server.id)
+        logger.info("Server: %s added", server.ip_address)
         return {
             "success": 1,
             "message": "success",
             "data": server.to_doc(),
         }
     else:
-        logger.error("Server: %s add failed", server.id)
+        logger.error("Server: %s add failed", server.ip_address)
         return {
             "success": 0,
             "message": "failed",

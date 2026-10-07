@@ -7,8 +7,7 @@ from pydantic import BaseModel, Field
 from src.db.v1.invoice_currency import InvoiceCurrency
 from src.db.v1.invoice_status import InvoiceStatus
 
-MONGODB_URI = "mongodb://127.0.0.1:27017/?retryWrites=true&w=majority"
-DB_NAME = "GreyWebVPN"
+from src.config import MONGODB_URI, DB_NAME, get_db  # central config
 COLLECTION_NAME = "invoices"
 
 DATE_FORMAT = "%a %b %d %H:%M:%S %Z %Y"
@@ -96,8 +95,7 @@ class InvoicePojo:
 
     @staticmethod
     async def get_collection():
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
-        db = client[DB_NAME]
+        db = get_db()
         return db[COLLECTION_NAME]
 
     def to_doc(self) -> dict:

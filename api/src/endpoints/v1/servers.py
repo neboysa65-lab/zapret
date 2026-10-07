@@ -2,8 +2,9 @@ import logging
 
 from fastapi import APIRouter, Request
 
-from src.db.v1.server_pojo import ServerPojo, ServerJson
-from src.db.v1.user_pojo import UserPojo
+from src.db.v1.server_pojo import ServerJson
+from src.db.v3.servers.server_pojo import ServerPojo
+from src.db.v3.user.user_pojo import UserPojo
 
 logger = logging.getLogger(__name__)
 
@@ -25,18 +26,14 @@ async def get_servers(request: Request):
     user_id = params_map["userId"].replace("\r", "").replace("\n", "").strip()
 
     user = UserPojo()
-    user.id = user_id
-    user.device_id = user_id
-    user.source_ip = user_ip
-    user.email = user_id
+    user.user_id = user_id
+    user = await user.find_by_user_id()
+    
+    is_premium = False
+    if user:
+        is_premium = user.is_premium
 
-    if await user.is_exist():
-        user = await user.find()
-    else:
-        await user.insert()
-        user = await user.find()
-
-    if user.is_premium:
+    if is_premium:
         servers = await ServerPojo.find_all()
     else:
         servers = await ServerPojo.all_without_premium()
@@ -45,14 +42,14 @@ async def get_servers(request: Request):
     for server in servers:
         if server.status:
             sj = ServerJson(
-                id=server.id,
+                id=server.ip_address,
                 country=server.country,
                 ip_address=server.ip_address,
                 recommend=server.recommend,
                 priority=server.priority,
-                u_nsm=server.u_nsm,
-                p_nsm=server.p_nsm,
-                ca_file_name=server.ca_file_name,
+                u_nsm=server.user,
+                p_nsm=server.password,
+                ca_file_name="",
                 ca_file=server.ca_file,
                 created_at=server.created_at,
                 premium=server.premium,

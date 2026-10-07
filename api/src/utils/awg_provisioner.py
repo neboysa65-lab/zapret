@@ -9,6 +9,7 @@
 
 Зачем: общий конфиг на всех юзеров ломает сервер (replay-защита WireGuard:
 устройство со сбитыми вперёд часами блокирует handshake всем остальным).
+Портировано из GreyWebVPN (pythonapi-rewrited) без изменений логики.
 """
 
 import asyncio
@@ -22,8 +23,12 @@ from src.db.v3.awg.user_config_pojo import UserConfigPojo
 
 logger = logging.getLogger(__name__)
 
-AGENT_REQUEST_TIMEOUT = 4.0   # сек на один вызов агента
-TOTAL_PROVISION_TIMEOUT = 6.0  # сек на все серверы суммарно (gather)
+AGENT_REQUEST_TIMEOUT = 11.0  # сек на один вызов агента
+TOTAL_PROVISION_TIMEOUT = 12.0  # сек на все серверы суммарно (gather).
+                                # Обязан быть меньше клиентского HTTP-таймаута
+                                # (15 с в api_service.dart) с запасом на
+                                # остальную работу эндпоинта, иначе клиент
+                                # отвалится раньше, чем придёт ответ.
 AGENT_FAIL_COOLDOWN = 60.0    # сек не дёргать агент после ошибки
 
 # ip_address -> unix time последней ошибки агента (in-memory negative cache)

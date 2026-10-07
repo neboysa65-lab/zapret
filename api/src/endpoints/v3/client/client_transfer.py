@@ -20,13 +20,11 @@ async def transfer(device_id: str = QueryParam(...)):
 
     newuser = UserPojoV3()
     mnemonic = await crypto_user.generate_mnemonic()
-    xprv = await crypto_user.mnemonic_to_xprv(mnemonic)
-    user_id = xprv.public_key().to_bytes().hex()
+    user_id = await crypto_user.mnemonic_to_xprv(mnemonic)
     newuser.user_id = user_id
     while await newuser.is_exist():
         mnemonic = await crypto_user.generate_mnemonic()
-        xprv = await crypto_user.mnemonic_to_xprv(mnemonic)
-        user_id = xprv.public_key().to_bytes().hex()
+        user_id = await crypto_user.mnemonic_to_xprv(mnemonic)
         newuser.user_id = user_id
 
     newuser.created_at = int(olduser.created_at.timestamp() * 1000) if hasattr(olduser.created_at, 'timestamp') else olduser.created_at

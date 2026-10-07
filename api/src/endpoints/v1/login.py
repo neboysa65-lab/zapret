@@ -1,5 +1,4 @@
 import logging
-from urllib.parse import parse_qsl, unquote_plus
 
 from fastapi import APIRouter, Request
 
@@ -29,15 +28,11 @@ async def profile(request: Request):
 
 
 async def _go(request_body: str, user_ip: str) -> dict:
-    """Вход / профиль. Здесь безопасно пишем platform (редко, не heartbeat)."""
-    try:
-        params_map = dict(parse_qsl(request_body, keep_blank_values=True))
-    except Exception:
-        params_map = {}
-        for pair in request_body.split("&"):
-            parts = pair.split("=", 1)
-            if len(parts) == 2:
-                params_map[parts[0]] = unquote_plus(parts[1])
+    params_map: dict[str, str] = {}
+    for pair in request_body.split("&"):
+        parts = pair.split("=", 1)
+        if len(parts) == 2:
+            params_map[parts[0]] = parts[1]
 
     device_id = ""
     if "deviceId" in params_map:
@@ -45,30 +40,16 @@ async def _go(request_body: str, user_ip: str) -> dict:
     if "userId" in params_map:
         device_id = params_map["userId"].replace("\r", "").replace("\n", "").strip()
 
-    # bundleId: app.greywebs.vpn (Android) / com.greywebs.greywebsvpn (iOS)
-    # НЕ обрабатываем heartbeat здесь — только login/profile.
-    bundle_id = (params_map.get("bundleId") or "").strip()
-
     user = UserPojo()
     user.id = device_id
     user.device_id = device_id
     user.source_ip = user_ip
     user.email = device_id
-    user.apply_bundle_id(bundle_id)
 
     if await user.is_exist():
-        existing = await user.find()
-        if existing is None:
-            await user.insert()
-            logger.info("User: %s logged created", user.id)
-        else:
-            existing.last_login = UserPojo.now()
-            if user_ip:
-                existing.source_ip = user_ip
-            # Обновляем platform только если bundleId валидный
-            existing.apply_bundle_id(bundle_id)
-            await existing.update()
-            user = existing
+        user = await user.find()
+        user.last_login = UserPojo.now()
+        await user.update()
     else:
         await user.insert()
         logger.info("User: %s logged created", user.id)

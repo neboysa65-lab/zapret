@@ -1,10 +1,7 @@
 from typing import Optional
-import time
 
-import motor.motor_asyncio
+from src.config import get_db
 
-MONGODB_URI = "mongodb://127.0.0.1:27017/?retryWrites=true&w=majority"
-DB_NAME = "GreyWebVPN"
 COLLECTION_NAME = "awg_user_configs"
 
 _index_created = False
@@ -21,15 +18,13 @@ class UserConfigPojo:
         self.ip_address: str = ""
         self.peer_name: str = ""
         self.config: str = ""
-        self.created_at: int = int(time.time() * 1000)
-        self.updated_at: int = int(time.time() * 1000)
+        self.created_at: int = 0
+        self.updated_at: int = 0
 
     @staticmethod
     async def get_collection():
         global _index_created
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
-        db = client[DB_NAME]
-        collection = db[COLLECTION_NAME]
+        collection = get_db()[COLLECTION_NAME]
         if not _index_created:
             await collection.create_index(
                 [("user_id", 1), ("ip_address", 1)], unique=True
@@ -66,8 +61,13 @@ class UserConfigPojo:
         return UserConfigPojo.from_doc(doc) if doc else None
 
     async def upsert(self) -> bool:
+        import time
+
         collection = await self.get_collection()
-        self.updated_at = int(time.time() * 1000)
+        now = int(time.time() * 1000)
+        if not self.created_at:
+            self.created_at = now
+        self.updated_at = now
         await collection.update_one(
             {"user_id": self.user_id, "ip_address": self.ip_address},
             {"$set": self.to_doc()},

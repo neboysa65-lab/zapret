@@ -3,19 +3,20 @@ import time
 
 import motor.motor_asyncio
 
-MONGODB_URI = "mongodb://127.0.0.1:27017/?retryWrites=true&w=majority"
-DB_NAME = "GreyWebVPN"
+from src.config import MONGODB_URI, DB_NAME, get_db  # central config
 COLLECTION_NAME = "servers_v3"
 
 
 class ServerPojo:
     def __init__(self):
         self.country: str = "0"
+        self.country_code: str = "0"
         self.ip_address: str = "0"
         self.recommend: bool = False
         self.priority: int = 0
         self.user: str = "0"
         self.password: str = "0"
+        self.ca_file_name: str = "0"
         self.ca_file: str = "0"
         self.created_at: int = int(time.time() * 1000)
         self.premium: bool = False
@@ -24,18 +25,19 @@ class ServerPojo:
 
     @staticmethod
     async def get_collection():
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
-        db = client[DB_NAME]
+        db = get_db()
         return db[COLLECTION_NAME]
 
     def to_doc(self) -> dict:
         return {
             "country": self.country,
+            "country_code": self.country_code,
             "ip_address": self.ip_address,
             "recommend": self.recommend,
             "priority": self.priority,
             "user": self.user,
             "password": self.password,
+            "ca_file_name": self.ca_file_name,
             "ca_file": self.ca_file,
             "created_at": self.created_at,
             "premium": self.premium,
@@ -47,11 +49,13 @@ class ServerPojo:
     def from_doc(doc: dict) -> "ServerPojo":
         s = ServerPojo()
         s.country = doc.get("country", "0")
+        s.country_code = doc.get("country_code", "0")
         s.ip_address = doc.get("ip_address", "0")
         s.recommend = doc.get("recommend", False)
         s.priority = doc.get("priority", 0)
         s.user = doc.get("user", "0")
         s.password = doc.get("password", "0")
+        s.ca_file_name = doc.get("ca_file_name", "0")
         s.ca_file = doc.get("ca_file", "0")
         s.created_at = doc.get("created_at", 0)
         s.premium = doc.get("premium", False)
@@ -78,10 +82,12 @@ class ServerPojo:
             {"ip_address": self.ip_address},
             {"$set": {
                 "country": self.country,
+                "country_code": self.country_code,
                 "recommend": self.recommend,
                 "priority": self.priority,
                 "user": self.user,
                 "password": self.password,
+                "ca_file_name": self.ca_file_name,
                 "ca_file": self.ca_file,
                 "created_at": self.created_at,
                 "premium": self.premium,
