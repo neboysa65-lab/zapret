@@ -56,9 +56,9 @@ class RemoteConfigService {
         // Сколько ждём ответ от Firebase, прежде чем взять дефолты.
         fetchTimeout: const Duration(seconds: 10),
         // Как часто разрешаем реально ходить в сеть за новыми значениями.
-        // 1 час — компромисс: быстро реагируем на смену домена, но не спамим.
+        // 10 минут — быстро реагируем на смену домена, но не спамим.
         // Для отладки можно поставить Duration.zero.
-        minimumFetchInterval: const Duration(hours: 1),
+        minimumFetchInterval: const Duration(minutes: 10),
       ));
 
       // Скачиваем + активируем свежие значения с жёстким таймаутом.
