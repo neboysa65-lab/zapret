@@ -76,9 +76,6 @@ class ApiHostService {
 
   // Свежих меток на одну проверку.
   static const _candidates = 2;
-  // Не больше стольких смен метки за окно: защита от «дрожания» на плохой сети.
-  static const _maxRotations = 3;
-  static const _rotationWindow = Duration(hours: 1);
   // Пауза после проверки, которая ничего не сменила, чтобы не засыпать сеть
   // пробами при каждом упавшем запросе.
   static const _cooldown = Duration(seconds: 20);
@@ -92,7 +89,6 @@ class ApiHostService {
   String? _label;
   Future<bool>? _rotation;
   DateTime _retryAfter = DateTime.fromMillisecondsSinceEpoch(0);
-  final List<DateTime> _rotations = [];
 
   /// Поднимает с диска последний `api_base_url` и метку. Remote Config может
   /// ответить нескоро или не ответить вовсе (Firebase тоже блокируют), а
@@ -181,8 +177,6 @@ class ApiHostService {
     try {
       final now = _now();
       if (now.isBefore(_retryAfter)) return false;
-      _rotations.removeWhere((at) => now.difference(at) >= _rotationWindow);
-      if (_rotations.length >= _maxRotations) return false;
 
       // Сменить метку имеет смысл, только если текущая молчит, а свежая нет;
       // если молчат обе, то нет сети или забит IP/вся зона, метка не поможет.
@@ -207,7 +201,6 @@ class ApiHostService {
       }
 
       _label = chosen;
-      _rotations.add(now);
       ApiConfig.baseUrl = template.build(chosen);
       unawaited(_store(_labelKey, chosen));
       _log('rotated → ${ApiConfig.baseUrl}');

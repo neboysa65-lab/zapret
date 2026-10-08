@@ -275,7 +275,6 @@ void main() {
         net.dead.add(blocked);
         await host.withFailover(failingOn(blocked, error: error));
         expect(_currentHost, isNot(blocked), reason: '$error');
-        clock = clock.add(const Duration(hours: 2)); // вне окна лимита ротаций
       }
     });
 
@@ -378,25 +377,15 @@ void main() {
       expect(result, ApiConfig.baseUrl);
     });
 
-    test('at most three rotations per hour', () async {
-      for (var i = 0; i < 3; i++) {
+    test('rotates again every time the current label gets blocked', () async {
+      final seen = <String>{_currentHost};
+      for (var i = 0; i < 6; i++) {
         final blocked = _currentHost;
         net.dead.add(blocked);
         await host.withFailover(failingOn(blocked));
-        expect(_currentHost, isNot(blocked));
+        expect(seen.add(_currentHost), isTrue, reason: 'rotation #$i');
       }
-
-      final stuck = _currentHost;
-      net.dead.add(stuck);
-      await expectLater(
-        host.withFailover(failingOn(stuck)),
-        throwsA(isA<SocketException>()),
-      );
-      expect(_currentHost, stuck);
-
-      clock = clock.add(const Duration(hours: 1, seconds: 1));
-      await host.withFailover(failingOn(stuck));
-      expect(_currentHost, isNot(stuck));
+      expect(seen, hasLength(7));
     });
 
     test('an address change from Remote Config during the probe wins',
