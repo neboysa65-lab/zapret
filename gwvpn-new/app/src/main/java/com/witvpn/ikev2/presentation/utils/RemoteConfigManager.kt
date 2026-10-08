@@ -8,6 +8,7 @@ import com.google.firebase.remoteconfig.ktx.remoteConfigSettings
 import com.witvpn.ikev2.BuildConfig
 import com.witvpn.ikev2.R
 import timber.log.Timber
+import java.security.SecureRandom
 
 /**
  * Централизованный источник «живых» доменов приложения.
@@ -31,6 +32,16 @@ import timber.log.Timber
  *   - api_base_url     — базовый URL API, напр. https://api.example.com/vpn/api/v1/
  *   - payment_url      — URL оплаты с плейсхолдером %s для userId
  *   - subscription_url — URL подписки со списком vless/hysteria2 нод
+ *
+ * Поддержка wildcard-масок (защита от блокировок домена):
+ *   Вместо конкретного домена в api_base_url / payment_url можно указать маску
+ *   вида https://*.api.gwapp.store/vpn/api/v1/ — приложение само сгенерирует
+ *   случайный субдомен (напр. https://fE53Hkf92H.api.gwapp.store/...) и будет
+ *   им пользоваться. Если хост перестал отвечать (заблокировали) — при первом
+ *   же сетевом сбое генерируется НОВЫЙ случайный субдомен и запрос повторяется
+ *   (ротацию выполняет DynamicBaseUrlInterceptor). Количество смен субдомена
+ *   не ограничено. Выбранный субдомен сохраняется в SharedPreferences и
+ *   переживает перезапуск приложения, пока работает.
  */
 object RemoteConfigManager {
 
@@ -39,6 +50,13 @@ object RemoteConfigManager {
     const val KEY_SUBSCRIPTION_URL = "subscription_url"
 
     private const val PREFS_NAME = "remote_config_cache"
+    private const val PREF_WILDCARD_LABEL = "wildcard_subdomain_label"
+
+    // Длина случайного субдомена для wildcard-масок (*.api.example.com).
+    private const val WILDCARD_LABEL_LENGTH = 10
+    private const val WILDCARD_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+    private val random = SecureRandom()
 
     // Как часто разрешаем реально ходить в сеть за конфигом.
     // В debug — сразу (0), в release — раз в час, чтобы не упираться в троттлинг Firebase.
@@ -49,6 +67,9 @@ object RemoteConfigManager {
     private var firebaseAvailable = false
 
     private var remoteConfig: FirebaseRemoteConfig? = null
+
+    @Volatile
+    private var cachedWildcardLabel: String? = null
 
     /**
      * Инициализация + первичная загрузка конфига. Вызывать один раз из
@@ -99,17 +120,21 @@ object RemoteConfigManager {
             key = KEY_API_BASE_URL,
             resourceDefault = context.getString(R.string.base_url)
         )
-        return if (raw.endsWith("/")) raw else "$raw/"
+        val expanded = expandWildcardTemplate(raw, context)
+        return if (expanded.endsWith("/")) expanded else "$expanded/"
     }
 
     /**
      * URL оплаты. Содержит плейсхолдер %s для подстановки userId.
      */
     fun getPaymentUrl(context: Context): String {
-        return resolve(
-            context,
-            key = KEY_PAYMENT_URL,
-            resourceDefault = BuildConfig.GRAYS_BILLING_URL
+        return expandWildcardTemplate(
+            resolve(
+                context,
+                key = KEY_PAYMENT_URL,
+                resourceDefault = BuildConfig.GRAYS_BILLING_URL
+            ),
+            context
         )
     }
 
@@ -127,6 +152,22 @@ object RemoteConfigManager {
             key = KEY_SUBSCRIPTION_URL,
             resourceDefault = context.getString(R.string.subscription_url)
         )
+    }
+
+    /**
+     * Ротация случайного субдомена wildcard-маски + возврат нового api_base_url.
+     * Вернёт null, если в конфиге нет маски — тогда ротировать нечего.
+     */
+    fun rotateWildcardAndReturnApiBaseUrl(context: Context): String? {
+        val raw = resolve(
+            context,
+            key = KEY_API_BASE_URL,
+            resourceDefault = context.getString(R.string.base_url)
+        )
+        if (!isWildcardTemplate(raw)) return null
+        val newLabel = generateAndPersistLabel(context)
+        Timber.d("RemoteConfig: rotated wildcard subdomain -> %s", newLabel)
+        return getApiBaseUrl(context)
     }
 
     // --- внутреннее ---
@@ -153,9 +194,56 @@ object RemoteConfigManager {
 
     private fun persist(context: Context, key: String, value: String) {
         if (value.isBlank()) return
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
+        prefs(context).edit()
             .putString(key, value)
             .apply()
+    }
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    // --- wildcard-маски ---
+
+    private fun isWildcardTemplate(url: String): Boolean = wildcardHost(url).contains("*")
+
+    private fun wildcardHost(url: String): String =
+        url.substringAfter("://", url).substringBefore('/')
+
+    /**
+     * Заменяет '*' в host-части на текущий случайный субдомен.
+     * Маска без схемы (напр. *.api.gwapp.store) считается https.
+     */
+    private fun expandWildcardTemplate(rawUrl: String, context: Context): String {
+        if (!isWildcardTemplate(rawUrl)) return rawUrl
+
+        val scheme = if (rawUrl.contains("://")) rawUrl.substringBefore("://") else "https"
+        val rest = rawUrl.substringAfter("://", rawUrl)
+        val host = rest.substringBefore('/')
+        val path = rest.substringAfter('/', "")
+        val expandedHost = host.replace("*", getCurrentWildcardLabel(context))
+        return if (path.isEmpty()) "$scheme://$expandedHost" else "$scheme://$expandedHost/$path"
+    }
+
+    private fun getCurrentWildcardLabel(context: Context): String {
+        cachedWildcardLabel?.let { return it }
+        val stored = prefs(context).getString(PREF_WILDCARD_LABEL, null)
+        if (!stored.isNullOrBlank()) {
+            cachedWildcardLabel = stored
+            return stored
+        }
+        return generateAndPersistLabel(context)
+    }
+
+    private fun generateAndPersistLabel(context: Context): String {
+        val sb = StringBuilder(WILDCARD_LABEL_LENGTH)
+        // Первый символ — буква: некоторые резолверы плохо живут с label-цифрой в начале.
+        sb.append(WILDCARD_ALPHABET[random.nextInt(26)])
+        repeat(WILDCARD_LABEL_LENGTH - 1) {
+            sb.append(WILDCARD_ALPHABET[random.nextInt(WILDCARD_ALPHABET.length)])
+        }
+        val label = sb.toString()
+        prefs(context).edit().putString(PREF_WILDCARD_LABEL, label).apply()
+        cachedWildcardLabel = label
+        return label
     }
 }

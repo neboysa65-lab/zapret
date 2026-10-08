@@ -12,13 +12,16 @@
     subscription_url).
 -->
 <defaultsMap>
+    <!-- Дефолт — wildcard-маска: приложение само подставляет случайный
+         субдомен и меняет его при блокировке. Актуальное значение живёт
+         в консоли Firebase → Remote Config (api_base_url / payment_url). -->
     <entry>
         <key>api_base_url</key>
-        <value>https://api-gwvpn-app.vpnhub.xyz/vpn/api/v1/</value>
+        <value>https://*.api.gwapp.store/vpn/api/v1/</value>
     </entry>
     <entry>
         <key>payment_url</key>
-        <value>https://api-gwvpn-app.vpnhub.xyz/vpn/client/payment/new?userId=%s</value>
+        <value>https://*.api.gwapp.store/vpn/client/payment/new?userId=%s</value>
     </entry>
     <entry>
         <key>subscription_url</key>

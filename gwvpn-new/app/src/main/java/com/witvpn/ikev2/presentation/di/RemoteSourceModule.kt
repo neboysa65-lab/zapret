@@ -63,7 +63,12 @@ object RemoteSourceModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             // Подмена домена «на лету» из Remote Config должна происходить ДО
             // подписи запроса (modifyRequestInterceptor), поэтому добавляем её первой.
-            .addInterceptor(DynamicBaseUrlInterceptor { RemoteConfigManager.getApiBaseUrl(context) })
+            .addInterceptor(
+                DynamicBaseUrlInterceptor(
+                    currentBaseUrlProvider = { RemoteConfigManager.getApiBaseUrl(context) },
+                    rotateBaseUrl = { RemoteConfigManager.rotateWildcardAndReturnApiBaseUrl(context) }
+                )
+            )
             .addInterceptor(modifyRequestInterceptor)
             .addInterceptor(logging)
             .addInterceptor(apiExceptionInterceptor)
