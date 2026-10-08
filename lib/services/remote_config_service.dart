@@ -103,12 +103,18 @@ class RemoteConfigService {
   }
 
   void _applyToApiConfig(FirebaseRemoteConfig rc) {
-    final api = rc.getString(kApiBaseUrl);
+    // Только значение, реально пришедшее из Remote Config. Если Firebase не
+    // ответил (fetch не прошёл или таймаут), rc отдаёт дефолт из setDefaults —
+    // применить его значило бы затереть сохранённый домен и вернуть клиента
+    // на зашитый адрес.
+    final apiValue = rc.getValue(kApiBaseUrl);
+    if (apiValue.source == ValueSource.valueRemote) {
+      // Валидирует сам: принимает и обычный URL, и wildcard-шаблон.
+      ApiHostService.instance.apply(apiValue.asString());
+    }
+
     final panel = rc.getString(kPanelBaseUrl);
     final sub = rc.getString(kSubBaseUrl);
-
-    // Валидирует сам: принимает и обычный URL, и wildcard-шаблон.
-    ApiHostService.instance.apply(api);
     if (_looksValid(panel)) ApiConfig.panelBaseUrl = _clean(panel);
     if (_looksValid(sub)) ApiConfig.subBaseUrl = _clean(sub);
 
