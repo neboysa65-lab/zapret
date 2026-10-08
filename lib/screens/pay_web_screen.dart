@@ -5,7 +5,6 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-import '../config/api_config.dart';
 import '../config/app_theme.dart';
 import '../providers/auth_provider.dart';
 
@@ -46,7 +45,8 @@ class _PayWebScreenState extends State<PayWebScreen>
   static const _timeout = Duration(minutes: 10);
 
   /// Хост нашего сайта с выбором тарифа — только он остаётся в WebView.
-  static final String _inAppHost = Uri.parse(ApiConfig.baseUrl).host;
+  /// Берём из открытой страницы: домен API может смениться, пока экран жив.
+  late final String _inAppHost = Uri.parse(widget.url).host;
 
   @override
   void initState() {

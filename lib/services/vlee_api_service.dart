@@ -6,9 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
-import '../config/api_config.dart';
 import '../models/vless_config_model.dart';
 import '../services/auth_service.dart';
+import 'api_host_service.dart';
 import 'vlee_identity.dart';
 
 /// Клиент раздачи VLEE-серверов.
@@ -55,13 +55,15 @@ class VleeApiService {
           '&time=$timeSeconds'
           '&bundleId=$_bundleId';
 
-      final response = await http
-          .post(
-            Uri.parse('${ApiConfig.baseUrl}/api/v1/user/server_vlee'),
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: body,
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await ApiHostService.instance.withFailover(
+        (base) => http
+            .post(
+              Uri.parse('$base/api/v1/user/server_vlee'),
+              headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+              body: body,
+            )
+            .timeout(const Duration(seconds: 15)),
+      );
 
       if (response.statusCode != 200) {
         throw Exception('VLEE servers HTTP ${response.statusCode}');

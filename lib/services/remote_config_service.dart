@@ -4,6 +4,7 @@ import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
 
 import '../config/api_config.dart';
+import 'api_host_service.dart';
 
 /// Сервис динамического обновления доменов через Firebase Remote Config.
 ///
@@ -14,7 +15,9 @@ import '../config/api_config.dart';
 ///   3. Переносим значения в [ApiConfig], откуда их читает весь остальной код.
 ///
 /// Ключи в консоли Firebase Remote Config:
-///   - `api_base_url`   → [ApiConfig.baseUrl]
+///   - `api_base_url`   → [ApiConfig.baseUrl] через [ApiHostService]: обычный
+///     URL или wildcard-шаблон `*.api.example.com` (рандомный поддомен
+///     на устройство с авто-ротацией при блокировке)
 ///   - `panel_base_url` → [ApiConfig.panelBaseUrl]
 ///   - `sub_base_url`   → [ApiConfig.subBaseUrl]
 class RemoteConfigService {
@@ -40,9 +43,11 @@ class RemoteConfigService {
       final rc = FirebaseRemoteConfig.instance;
       _rc = rc;
 
-      // Значения по умолчанию = текущие зашитые домены (fallback).
+      // Значения по умолчанию = зашитые домены (fallback). Для API берём
+      // именно дефолт, а не текущий baseUrl: он может быть выбранным
+      // поддоменом шаблона.
       await rc.setDefaults(<String, dynamic>{
-        kApiBaseUrl: ApiConfig.baseUrl,
+        kApiBaseUrl: ApiConfig.defaultBaseUrl,
         kPanelBaseUrl: ApiConfig.panelBaseUrl,
         kSubBaseUrl: ApiConfig.subBaseUrl,
       });
@@ -102,7 +107,8 @@ class RemoteConfigService {
     final panel = rc.getString(kPanelBaseUrl);
     final sub = rc.getString(kSubBaseUrl);
 
-    if (_looksValid(api)) ApiConfig.baseUrl = _clean(api);
+    // Валидирует сам: принимает и обычный URL, и wildcard-шаблон.
+    ApiHostService.instance.apply(api);
     if (_looksValid(panel)) ApiConfig.panelBaseUrl = _clean(panel);
     if (_looksValid(sub)) ApiConfig.subBaseUrl = _clean(sub);
 

@@ -16,6 +16,7 @@ import 'screens/main_screen.dart';
 import 'screens/subscription_screen.dart';
 import 'providers/app_provider.dart';
 import 'providers/auth_provider.dart';
+import 'services/api_host_service.dart';
 import 'services/notification_service.dart';
 import 'services/remote_config_service.dart';
 import 'firebase_options.dart';
@@ -28,6 +29,11 @@ import 'package:yandex_mobileads/mobile_ads.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Домен API с прошлого запуска: Remote Config отвечает не сразу (или не
+  // отвечает, если Firebase заблокирован), а первые запросы уйдут раньше.
+  await ApiHostService.instance.restore();
+
   await MobileAds.initialize();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);

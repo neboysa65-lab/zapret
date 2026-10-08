@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import '../config/api_config.dart';
 import '../models/vless_config_model.dart';
 import '../services/auth_service.dart';
+import 'api_host_service.dart';
 import 'vlee_api_service.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -37,12 +37,14 @@ class ApiService {
   Future<List<VlessConfig>> fetchAwgConfigs() async {
     final seedHash = await AuthService.loadSeedHash();
     if (seedHash == null) throw StateError('Not authenticated');
-    final response = await _client
-        .get(
-          Uri.parse('${ApiConfig.baseUrl}/api/v1/awg/servers'),
-          headers: {'X-Seed-Hash': seedHash},
-        )
-        .timeout(const Duration(seconds: 15));
+    final response = await ApiHostService.instance.withFailover(
+      (base) => _client
+          .get(
+            Uri.parse('$base/api/v1/awg/servers'),
+            headers: {'X-Seed-Hash': seedHash},
+          )
+          .timeout(const Duration(seconds: 15)),
+    );
     if (response.statusCode == 404) return []; // API-first rolling deployment.
     if (response.statusCode != 200) {
       throw StateError('AWG HTTP ${response.statusCode}');
@@ -84,12 +86,14 @@ class ApiService {
 
     try {
       print('🌐 Fetching configs from backend proxy...');
-      final response = await _client
-          .get(
-            Uri.parse('${ApiConfig.baseUrl}/api/v1/configs/'),
-            headers: {'X-Seed-Hash': seedHash},
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await ApiHostService.instance.withFailover(
+        (base) => _client
+            .get(
+              Uri.parse('$base/api/v1/configs/'),
+              headers: {'X-Seed-Hash': seedHash},
+            )
+            .timeout(const Duration(seconds: 15)),
+      );
 
       print('📡 HTTP Status: ${response.statusCode}');
 

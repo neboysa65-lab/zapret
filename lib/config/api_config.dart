@@ -9,9 +9,15 @@
 /// Поля намеренно НЕ `const` и НЕ `final`, чтобы их можно было
 /// перезаписать во время выполнения (см. RemoteConfigService.applyToApiConfig).
 class ApiConfig {
-  /// Основной API-домен (регистрация, тарифы, конфиги, оплата).
-  /// Remote Config key: `api_base_url`
-  static String baseUrl = 'https://vleapi.vpnhub.xyz';
+  /// Запасной основной API-домен: пока Remote Config не ответил и с прошлых
+  /// запусков ничего не сохранилось. Может быть и wildcard-шаблоном
+  /// (`https://*.api.example.com`), см. [ApiHostService].
+  static const String defaultBaseUrl = 'https://vleapi.vpnhub.xyz';
+
+  /// Текущий основной API-домен (регистрация, тарифы, конфиги, оплата).
+  /// Remote Config key: `api_base_url` — обычный URL или wildcard-шаблон
+  /// `*.api.example.com`. Пишет сюда только [ApiHostService].
+  static String baseUrl = defaultBaseUrl;
 
   /// Домен панели управления (метрики нод, статистика трафика).
   /// Remote Config key: `panel_base_url`
