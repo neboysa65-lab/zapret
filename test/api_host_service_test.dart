@@ -4,36 +4,12 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vpn_subscription_app/config/api_config.dart';
 import 'package:vpn_subscription_app/services/api_host_service.dart';
 
 const _template = 'https://*.api.appvle.store';
 final _urlWithLabel = RegExp(r'^https://([a-z0-9]{12})\.api\.appvle\.store$');
-
-/// Сеть для проб: часть хостов отказывает, часть молчит (пакеты дропаются).
-class FakeNetwork {
-  final dead = <String>{};
-  final silent = <String>{};
-  bool offline = false;
-  int status = 200;
-  void Function()? onFirstProbe;
-  final probes = <Uri>[];
-
-  late final MockClient client = MockClient((request) async {
-    probes.add(request.url);
-    final hook = onFirstProbe;
-    onFirstProbe = null;
-    hook?.call();
-    final host = request.url.host;
-    if (offline || dead.contains(host)) {
-      throw const SocketException('Failed host lookup');
-    }
-    if (silent.contains(host)) return Completer<http.Response>().future;
-    return http.Response('[]', status);
-  });
-}
 
 String get _currentHost => Uri.parse(ApiConfig.baseUrl).host;
 
@@ -43,21 +19,12 @@ Future<SharedPreferences> _flushedPrefs() async {
 }
 
 void main() {
-  late FakeNetwork net;
-  late DateTime clock;
   late ApiHostService host;
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     ApiConfig.baseUrl = ApiConfig.defaultBaseUrl;
-    net = FakeNetwork();
-    clock = DateTime(2026, 1, 1);
-    host = ApiHostService(
-      client: net.client,
-      random: Random(1),
-      now: () => clock,
-      probeTimeout: const Duration(milliseconds: 50),
-    );
+    host = ApiHostService(random: Random(1));
   });
 
   group('ApiHostTemplate', () {
@@ -121,7 +88,7 @@ void main() {
       expect(ApiConfig.baseUrl, 'https://$label.api2.example.org');
     });
 
-    test('plain URL works as before and switches template mode off', () async {
+    test('a plain URL works as before and turns template mode off', () async {
       host.apply(_template);
       expect(host.apply('https://plain.example.com//'), isTrue);
       expect(ApiConfig.baseUrl, 'https://plain.example.com');
@@ -132,7 +99,7 @@ void main() {
         ),
         throwsA(isA<SocketException>()),
       );
-      expect(net.probes, isEmpty);
+      expect(ApiConfig.baseUrl, 'https://plain.example.com');
     });
 
     test('invalid values are ignored', () {
@@ -230,7 +197,7 @@ void main() {
     setUp(() => host.apply(_template));
 
     /// Запрос, который падает, пока адрес указывает на [blocked].
-    Future<String> Function(String) failingOn(
+    Future<http.Response> Function(String) failingOn(
       String blocked, {
       Object? error,
       List<String>? attempts,
@@ -240,31 +207,30 @@ void main() {
           if (Uri.parse(base).host == blocked) {
             throw error ?? const SocketException('Connection reset by peer');
           }
-          return base;
+          return http.Response('ok', 200);
         };
 
-    test('blocked label: switches, persists and retries on the new host',
+    test('a blocked label is replaced, persisted and retried on the new host',
         () async {
       final blocked = _currentHost;
-      net.dead.add(blocked);
       final attempts = <String>[];
 
-      final result = await host.withFailover(
+      final response = await host.withFailover(
         failingOn(blocked, attempts: attempts),
       );
 
+      expect(response.statusCode, 200);
       expect(attempts, hasLength(2));
-      expect(result, ApiConfig.baseUrl);
       expect(_currentHost, isNot(blocked));
+      expect(attempts.last, ApiConfig.baseUrl);
       expect(_urlWithLabel.hasMatch(ApiConfig.baseUrl), isTrue);
       expect(
         (await _flushedPrefs()).getString('api_host_label'),
         _urlWithLabel.firstMatch(ApiConfig.baseUrl)!.group(1),
       );
-      expect(net.probes.map((u) => u.path).toSet(), {'/api/v1/tariffs'});
     });
 
-    test('every kind of transport failure triggers a rotation', () async {
+    test('every kind of transport failure switches the label', () async {
       for (final error in <Object>[
         const SocketException('Failed host lookup'),
         const HandshakeException('Connection terminated during handshake'),
@@ -272,84 +238,90 @@ void main() {
         http.ClientException('Connection closed before full header'),
       ]) {
         final blocked = _currentHost;
-        net.dead.add(blocked);
         await host.withFailover(failingOn(blocked, error: error));
         expect(_currentHost, isNot(blocked), reason: '$error');
       }
     });
 
-    test('a host that silently drops packets is rotated after the probe times out',
-        () async {
-      final blocked = _currentHost;
-      net.silent.add(blocked);
-
-      await host.withFailover(
-        failingOn(blocked, error: TimeoutException('no answer')),
-      );
-
-      expect(_currentHost, isNot(blocked));
+    test('a successful response leaves the label alone', () async {
+      final before = ApiConfig.baseUrl;
+      final response =
+          await host.withFailover((_) async => http.Response('ok', 200));
+      expect(response.statusCode, 200);
+      expect(ApiConfig.baseUrl, before);
     });
 
-    test('application errors never rotate or probe', () async {
+    test('error HTTP statuses switch the label and are retried', () async {
+      for (final status in [404, 429, 500, 503]) {
+        final before = _currentHost;
+        var calls = 0;
+
+        final response = await host.withFailover((_) async {
+          calls++;
+          return http.Response('boom', calls == 1 ? status : 200);
+        });
+
+        expect(calls, 2, reason: '$status');
+        expect(response.statusCode, 200, reason: '$status');
+        expect(_currentHost, isNot(before), reason: '$status');
+      }
+    });
+
+    test('a plain URL is left alone on any failure', () async {
+      host.apply('https://plain.example.com');
+      await expectLater(
+        host.withFailover(
+          (_) async => throw const SocketException('Network is unreachable'),
+        ),
+        throwsA(isA<SocketException>()),
+      );
+      final response =
+          await host.withFailover((_) async => http.Response('boom', 500));
+      expect(response.statusCode, 500);
+      expect(ApiConfig.baseUrl, 'https://plain.example.com');
+    });
+
+    test('application errors never switch the label', () async {
       final before = ApiConfig.baseUrl;
       await expectLater(
         host.withFailover((_) async => throw const FormatException('json')),
         throwsFormatException,
       );
-      // HTTP-статус — обычный ответ, до failover он не доходит.
-      expect(await host.withFailover((_) async => 503), 503);
       expect(ApiConfig.baseUrl, before);
-      expect(net.probes, isEmpty);
     });
 
-    test('a live host with a transient error is left alone', () async {
-      final before = ApiConfig.baseUrl;
-      net.status = 500; // сервер отвечает, пусть и ошибкой
+    test('a plain URL applied while the request was in flight wins', () async {
       await expectLater(
-        host.withFailover((_) async => throw TimeoutException('slow')),
-        throwsA(isA<TimeoutException>()),
+        host.withFailover((_) async {
+          host.apply('https://plain.example.com');
+          throw const SocketException('reset');
+        }),
+        throwsA(isA<SocketException>()),
       );
-      expect(ApiConfig.baseUrl, before);
+      expect(ApiConfig.baseUrl, 'https://plain.example.com');
     });
 
-    test('offline: keeps the label, pauses probing, resumes after the pause',
-        () async {
-      final before = ApiConfig.baseUrl;
-      net.offline = true;
-      Future<String> call() => host.withFailover(
-            (_) async => throw const SocketException('Network is unreachable'),
-          );
-
-      await expectLater(call(), throwsA(isA<SocketException>()));
-      expect(net.probes, hasLength(3)); // текущий + две свежие метки
-      expect(ApiConfig.baseUrl, before);
-
-      await expectLater(call(), throwsA(isA<SocketException>()));
-      expect(net.probes, hasLength(3), reason: 'pause: no new probes');
-
-      clock = clock.add(const Duration(seconds: 21));
-      net.offline = false;
-      net.dead.add(_currentHost);
-      await host.withFailover(failingOn(_currentHost));
-      expect(ApiConfig.baseUrl, isNot(before));
-    });
-
-    test('concurrent failures share one rotation', () async {
+    test('concurrent failures share one new label', () async {
       final blocked = _currentHost;
-      net.dead.add(blocked);
+      final attempts = <String>[];
 
-      final results = await Future.wait([
-        for (var i = 0; i < 3; i++) host.withFailover(failingOn(blocked)),
+      final responses = await Future.wait([
+        for (var i = 0; i < 3; i++)
+          host.withFailover(failingOn(blocked, attempts: attempts)),
       ]);
 
-      expect(results.toSet(), {ApiConfig.baseUrl});
-      expect(net.probes, hasLength(3));
+      expect(responses.map((r) => r.statusCode), everyElement(200));
+      expect(_currentHost, isNot(blocked));
+      final retried =
+          attempts.where((a) => Uri.parse(a).host != blocked).toSet();
+      expect(retried, hasLength(1), reason: 'все повторы — на одну новую метку');
+      expect(retried.single, ApiConfig.baseUrl);
     });
 
-    test('non-idempotent request is not re-sent after a timeout but heals',
+    test('a non-idempotent request is not re-sent after a timeout, '
+        'but the label still changes',
         () async {
-      final blocked = _currentHost;
-      net.dead.add(blocked);
+      final before = _currentHost;
       var sends = 0;
 
       await expectLater(
@@ -361,44 +333,47 @@ void main() {
       );
 
       expect(sends, 1);
-      expect(_currentHost, isNot(blocked));
+      expect(_currentHost, isNot(before));
     });
 
-    test('non-idempotent request is re-sent after a plain connection error',
+    test('a non-idempotent request is re-sent after a plain connection error',
         () async {
       final blocked = _currentHost;
-      net.dead.add(blocked);
 
-      final result = await host.withFailover(
+      final response = await host.withFailover(
         failingOn(blocked),
         idempotent: false,
       );
 
-      expect(result, ApiConfig.baseUrl);
+      expect(response.statusCode, 200);
+      expect(_currentHost, isNot(blocked));
     });
 
-    test('rotates again every time the current label gets blocked', () async {
+    test('a non-idempotent request is not re-sent after an error response, '
+        'but the label still changes',
+        () async {
+      final before = _currentHost;
+      var sends = 0;
+
+      final response = await host.withFailover((_) async {
+        sends++;
+        return http.Response('boom', 500);
+      }, idempotent: false);
+
+      expect(sends, 1);
+      expect(response.statusCode, 500);
+      expect(_currentHost, isNot(before));
+    });
+
+    test('the label changes again every time the new one gets blocked',
+        () async {
       final seen = <String>{_currentHost};
       for (var i = 0; i < 6; i++) {
         final blocked = _currentHost;
-        net.dead.add(blocked);
         await host.withFailover(failingOn(blocked));
-        expect(seen.add(_currentHost), isTrue, reason: 'rotation #$i');
+        expect(seen.add(_currentHost), isTrue, reason: 'switch #$i');
       }
       expect(seen, hasLength(7));
-    });
-
-    test('an address change from Remote Config during the probe wins',
-        () async {
-      final blocked = _currentHost;
-      net.dead.add(blocked);
-      net.onFirstProbe = () => host.apply('https://plain.example.com');
-      final attempts = <String>[];
-
-      await host.withFailover(failingOn(blocked, attempts: attempts));
-
-      expect(attempts.last, 'https://plain.example.com');
-      expect(ApiConfig.baseUrl, 'https://plain.example.com');
     });
   });
 }

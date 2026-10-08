@@ -46,19 +46,12 @@ class ApiHostTemplate {
 ///
 /// Обычный URL из Remote Config работает как раньше. Для wildcard-шаблона
 /// (`*.api.example.com`) на устройстве генерируется случайная метка
-/// (`k3x9a0qf7d2m.api.example.com`) и хранится между запусками. Если запрос
-/// упал на уровне соединения, а свежая метка отвечает, домен меняется на неё
-/// и запрос повторяется.
+/// (`k3x9a0qf7d2m.api.example.com`) и хранится между запусками. Любой сбой —
+/// сетевой или ответ с ошибкой — сразу меняет метку на свежую: старая могла
+/// быть заблокирована, а смена не стоит ничего, потому что все метки ведут
+/// на один сервер.
 class ApiHostService {
-  ApiHostService({
-    http.Client? client,
-    Random? random,
-    DateTime Function()? now,
-    Duration probeTimeout = const Duration(seconds: 5),
-  })  : _client = client ?? http.Client(),
-        _random = random ?? Random.secure(),
-        _now = now ?? DateTime.now,
-        _probeTimeout = probeTimeout;
+  ApiHostService({Random? random}) : _random = random ?? Random.secure();
 
   static final ApiHostService instance = ApiHostService();
 
@@ -66,29 +59,14 @@ class ApiHostService {
   static const _sourceKey = 'api_host_source';
   static const _labelKey = 'api_host_label';
 
-  // Эндпоинт без авторизации: любой HTTP-ответ доказывает, что DNS, TLS
-  // и маршрут до сервера работают.
-  static const _probePath = '/api/v1/tariffs';
-
   static const _alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
   static const _labelLength = 12;
   static final _labelPattern = RegExp(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$');
 
-  // Свежих меток на одну проверку.
-  static const _candidates = 2;
-  // Пауза после проверки, которая ничего не сменила, чтобы не засыпать сеть
-  // пробами при каждом упавшем запросе.
-  static const _cooldown = Duration(seconds: 20);
-
-  final http.Client _client;
   final Random _random;
-  final DateTime Function() _now;
-  final Duration _probeTimeout;
 
   ApiHostTemplate? _template;
   String? _label;
-  Future<bool>? _rotation;
-  DateTime _retryAfter = DateTime.fromMillisecondsSinceEpoch(0);
 
   /// Поднимает с диска последний `api_base_url` и метку. Remote Config может
   /// ответить нескоро или не ответить вовсе (Firebase тоже блокируют), а
@@ -134,25 +112,31 @@ class ApiHostService {
     return true;
   }
 
-  /// Выполняет [send] с текущим базовым URL. При сбое соединения проверяет
-  /// хост и, если метку удалось сменить, повторяет запрос один раз на новом.
+  /// Выполняет [send] с текущим базовым URL.
   ///
-  /// HTTP-ответы (в том числе 4xx/5xx) сюда не попадают: [send] должен
-  /// возвращать ответ, а статус разбирать снаружи. Для запросов, которые
-  /// нельзя повторять вслепую, передавайте `idempotent: false`: после таймаута
-  /// сервер мог успеть их обработать.
-  Future<T> withFailover<T>(
-    Future<T> Function(String baseUrl) send, {
+  /// Сбой — сетевой (DNS, TCP, TLS, обрыв, таймаут) или ответ с ошибкой
+  /// (HTTP >= 400) — меняет метку на свежую и один раз повторяет запрос на
+  /// новом хосте. Для запросов, которые нельзя слать вслепую, передавайте
+  /// `idempotent: false`: после таймаута сервер мог успеть их обработать.
+  Future<http.Response> withFailover(
+    Future<http.Response> Function(String baseUrl) send, {
     bool idempotent = true,
   }) async {
     final baseUrl = ApiConfig.baseUrl;
+    http.Response response;
     try {
-      return await send(baseUrl);
+      response = await send(baseUrl);
     } catch (error) {
-      if (!isConnectionFailure(error) || !await _recover(baseUrl)) rethrow;
+      if (!isConnectionFailure(error)) rethrow;
+      if (!_switchLabel(baseUrl)) rethrow;
       if (!idempotent && error is TimeoutException) rethrow;
       return send(ApiConfig.baseUrl);
     }
+
+    if (response.statusCode >= 400 && _switchLabel(baseUrl) && idempotent) {
+      return send(ApiConfig.baseUrl);
+    }
+    return response;
   }
 
   /// Ошибки уровня соединения: DNS, TCP, TLS, обрыв, таймаут.
@@ -164,62 +148,18 @@ class ApiHostService {
       error is TimeoutException ||
       error is http.ClientException;
 
-  /// true, если домен уже сменили и упавший запрос стоит повторить.
-  Future<bool> _recover(String failedBase) {
+  /// Меняет метку на свежую. false — если шаблон не задан (обычный URL):
+  /// менять нечего.
+  bool _switchLabel(String failedBase) {
     final template = _template;
-    if (template == null) return Future.value(false);
-    if (failedBase != ApiConfig.baseUrl) return Future.value(true);
-    return _rotation ??=
-        _rotate(template, failedBase).whenComplete(() => _rotation = null);
-  }
-
-  Future<bool> _rotate(ApiHostTemplate template, String failedBase) async {
-    try {
-      final now = _now();
-      if (now.isBefore(_retryAfter)) return false;
-
-      // Сменить метку имеет смысл, только если текущая молчит, а свежая нет;
-      // если молчат обе, то нет сети или забит IP/вся зона, метка не поможет.
-      final labels = [for (var i = 0; i < _candidates; i++) _newLabel()];
-      final current = _reachable(failedBase);
-      final fresh = [
-        for (final label in labels) _reachable(template.build(label)),
-      ];
-
-      String? chosen;
-      if (!await current) {
-        for (var i = 0; i < labels.length && chosen == null; i++) {
-          if (await fresh[i]) chosen = labels[i];
-        }
-      }
-
-      // Пока шли пробы, Remote Config мог выдать другой адрес.
-      if (ApiConfig.baseUrl != failedBase) return true;
-      if (chosen == null) {
-        _retryAfter = now.add(_cooldown);
-        return false;
-      }
-
-      _label = chosen;
-      ApiConfig.baseUrl = template.build(chosen);
-      unawaited(_store(_labelKey, chosen));
-      _log('rotated → ${ApiConfig.baseUrl}');
-      return true;
-    } catch (e) {
-      _log('rotation failed: $e');
-      return false;
-    }
-  }
-
-  Future<bool> _reachable(String baseUrl) async {
-    try {
-      await _client
-          .get(Uri.parse('$baseUrl$_probePath'))
-          .timeout(_probeTimeout);
-      return true;
-    } catch (_) {
-      return false;
-    }
+    if (template == null) return false;
+    // Пока падал запрос, метку мог сменить другой запрос.
+    if (ApiConfig.baseUrl != failedBase) return true;
+    final label = _label = _newLabel();
+    ApiConfig.baseUrl = template.build(label);
+    unawaited(_store(_labelKey, label));
+    _log('switched → ${ApiConfig.baseUrl}');
+    return true;
   }
 
   String _newLabel() => String.fromCharCodes([
