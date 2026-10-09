@@ -11,9 +11,9 @@
       "type": "SINGLE",
       "filters": [],
       "attributes": [],
-      "versionCode": 285,
-      "versionName": "3.1.3",
-      "outputFile": "GreyWebVPN-3.1.3 [285]-release.apk"
+      "versionCode": 288,
+      "versionName": "3.1.4",
+      "outputFile": "GreyWebVPN-3.1.4 [288]-release.apk"
     }
   ],
   "elementType": "File",
@@ -22,14 +22,14 @@
       "minApi": 28,
       "maxApi": 30,
       "baselineProfiles": [
-        "baselineProfiles/1/GreyWebVPN-3.1.3 [285]-release.dm"
+        "baselineProfiles/1/GreyWebVPN-3.1.4 [288]-release.dm"
       ]
     },
     {
       "minApi": 31,
       "maxApi": 2147483647,
       "baselineProfiles": [
-        "baselineProfiles/0/GreyWebVPN-3.1.3 [285]-release.dm"
+        "baselineProfiles/0/GreyWebVPN-3.1.4 [288]-release.dm"
       ]
     }
   ],
