@@ -34,6 +34,14 @@ class ApiConfig {
   /// Endpoint MTP-движка `ip:port` (UDP). Remote Config key: `mimic_server`.
   static String mimicServer = '57.129.126.169:443';
 
+  /// Endpoint TCP-фолбека `ip:port` (TLS + пин SPKI).
+  /// Remote Config key: `mimic_tcp_server`.
+  static String mimicTcpServer = '57.129.126.169:8443';
+
+  /// Пин сертификата TCP-фолбека: sha256 от SPKI (hex, 64 символа).
+  /// Remote Config key: `mimic_tcp_pin`.
+  static String mimicTcpPin = 'fc2bf9d3f684be3e1ee6ef6f5121e460a5a98d371a1c08bcf9c9c673c346b9c6';
+
   /// Общий секрет движка (он же «uuid» в терминологии Mimic).
   /// Remote Config key: `mimic_secret`.
   static String mimicSecret = '22c78a41db1f77073c3d218becfc51ea318e37f09716bd36';

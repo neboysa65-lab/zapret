@@ -19,6 +19,8 @@ class MimicBridge(messenger: BinaryMessenger) {
                     val server = call.argument<String>("server")
                     val secret = call.argument<String>("secret")
                     val domains = call.argument<String>("domains") ?: ""
+                    val transport = call.argument<String>("transport") ?: "udp"
+                    val pin = call.argument<String>("pin") ?: ""
                     val socksPort = call.argument<Int>("socksPort") ?: MimicPorts.SOCKS
                     val httpPort = call.argument<Int>("httpPort") ?: MimicPorts.HTTP
                     if (server.isNullOrEmpty() || secret.isNullOrEmpty()) {
@@ -27,7 +29,10 @@ class MimicBridge(messenger: BinaryMessenger) {
                         // Handshake блокирует на секунды — не на main-потоке.
                         executor.execute {
                             val error = try {
-                                Mimicmobile.start(server, secret, domains, socksPort, httpPort)
+                                Mimicmobile.start(
+                                    server, secret, domains, transport, pin,
+                                    socksPort.toLong(), httpPort.toLong(),
+                                )
                                 null
                             } catch (t: Throwable) {
                                 t.message ?: "mimic engine start failed"
@@ -43,7 +48,9 @@ class MimicBridge(messenger: BinaryMessenger) {
                 "stop" -> {
                     executor.execute {
                         try {
-                            Mimicmobile.stop()
+                            Mimicmobile.stop(
+                                call.argument<String>("transport") ?: "udp",
+                            )
                         } catch (_: Throwable) {
                         }
                     }
@@ -52,7 +59,9 @@ class MimicBridge(messenger: BinaryMessenger) {
 
                 "isConnected" -> result.success(
                     try {
-                        Mimicmobile.isConnected()
+                        Mimicmobile.isConnected(
+                            call.argument<String>("transport") ?: "udp",
+                        )
                     } catch (_: Throwable) {
                         false
                     }

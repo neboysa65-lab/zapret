@@ -30,6 +30,8 @@ class RemoteConfigService {
   static const String kPanelBaseUrl = 'panel_base_url';
   static const String kSubBaseUrl = 'sub_base_url';
   static const String kMimicServer = 'mimic_server';
+  static const String kMimicTcpServer = 'mimic_tcp_server';
+  static const String kMimicTcpPin = 'mimic_tcp_pin';
   static const String kMimicSecret = 'mimic_secret';
   static const String kMimicEnabled = 'mimic_enabled';
   static const String kMimicHosts = 'mimic_hosts';
@@ -56,6 +58,8 @@ class RemoteConfigService {
         kPanelBaseUrl: ApiConfig.panelBaseUrl,
         kSubBaseUrl: ApiConfig.subBaseUrl,
         kMimicServer: ApiConfig.mimicServer,
+        kMimicTcpServer: ApiConfig.mimicTcpServer,
+        kMimicTcpPin: ApiConfig.mimicTcpPin,
         kMimicSecret: ApiConfig.mimicSecret,
         kMimicEnabled: ApiConfig.mimicEnabled,
         kMimicHosts: ApiConfig.mimicHostSuffixes.join(','),
@@ -130,6 +134,8 @@ class RemoteConfigService {
     // Второй транспорт (MTP). Применяем только то, что реально пришло из
     // Remote Config: дефолты не должны затирать рабочий конфиг движка.
     final mimicServer = rc.getValue(kMimicServer);
+    final mimicTcpServer = rc.getValue(kMimicTcpServer);
+    final mimicTcpPin = rc.getValue(kMimicTcpPin);
     final mimicSecret = rc.getValue(kMimicSecret);
     final mimicEnabled = rc.getValue(kMimicEnabled);
     final mimicHosts = rc.getValue(kMimicHosts);
@@ -137,6 +143,14 @@ class RemoteConfigService {
       server: mimicServer.source == ValueSource.valueRemote &&
               _looksValidMimicEndpoint(mimicServer.asString())
           ? mimicServer.asString().trim()
+          : null,
+      tcpServer: mimicTcpServer.source == ValueSource.valueRemote &&
+              _looksValidMimicEndpoint(mimicTcpServer.asString())
+          ? mimicTcpServer.asString().trim()
+          : null,
+      tcpPin: mimicTcpPin.source == ValueSource.valueRemote &&
+              mimicTcpPin.asString().trim().length >= 64
+          ? mimicTcpPin.asString().trim()
           : null,
       secret: mimicSecret.source == ValueSource.valueRemote &&
               mimicSecret.asString().trim().length >= 16

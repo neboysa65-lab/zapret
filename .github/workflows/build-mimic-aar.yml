@@ -41,6 +41,18 @@ jobs:
           go mod tidy
           gomobile bind -target=android -androidapi 24 -o /tmp/mimic.aar .
 
+      - name: Build the TCP fallback server binary
+        run: |
+          cd mimic_mobile
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w" -o /tmp/mimic-server-tcp ./cmd/mimic-server-tcp
+
+      - name: Upload server binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mimic-server-tcp-linux-amd64
+          path: /tmp/mimic-server-tcp
+
       - name: Unpack AAR into the gradle module
         run: |
           unzip -o /tmp/mimic.aar -d /tmp/mimic_aar

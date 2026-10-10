@@ -3,59 +3,82 @@ import 'package:vpn_subscription_app/services/mimic_transport_service.dart';
 
 void main() {
   final now = DateTime(2026, 10, 10, 12);
+  final epoch = DateTime.fromMillisecondsSinceEpoch(0);
+  const suffixes = ['appvle.store', 'gw-vpn.click'];
 
-  test('routes nothing when tunnel is down or disabled', () {
+  test('falls back to direct when both tunnels are down', () {
     expect(
-      MimicTransportService.shouldRoute(
+      MimicTransportService.decide(
         host: 'api.appvle.store',
         enabled: true,
-        tunnelUp: false,
-        cooldownUntil: DateTime.fromMillisecondsSinceEpoch(0),
-        hostSuffixes: ['appvle.store'],
+        udpUp: false,
+        tcpUp: false,
+        udpCooldown: epoch,
+        tcpCooldown: epoch,
+        hostSuffixes: suffixes,
         now: now,
       ),
-      isFalse,
+      'direct',
     );
     expect(
-      MimicTransportService.shouldRoute(
+      MimicTransportService.decide(
         host: 'api.appvle.store',
         enabled: false,
-        tunnelUp: true,
-        cooldownUntil: DateTime.fromMillisecondsSinceEpoch(0),
-        hostSuffixes: ['appvle.store'],
+        udpUp: true,
+        tcpUp: true,
+        udpCooldown: epoch,
+        tcpCooldown: epoch,
+        hostSuffixes: suffixes,
         now: now,
       ),
-      isFalse,
+      'direct',
     );
   });
 
-  test('respects the cooldown window', () {
+  test('udp wins while healthy, tcp takes over after udp cooldown', () {
+    const cool = Duration(minutes: 1);
     expect(
-      MimicTransportService.shouldRoute(
+      MimicTransportService.decide(
         host: 'api.appvle.store',
         enabled: true,
-        tunnelUp: true,
-        cooldownUntil: now.add(const Duration(minutes: 1)),
-        hostSuffixes: ['appvle.store'],
+        udpUp: true,
+        tcpUp: true,
+        udpCooldown: epoch,
+        tcpCooldown: epoch,
+        hostSuffixes: suffixes,
         now: now,
       ),
-      isFalse,
+      'udp',
     );
     expect(
-      MimicTransportService.shouldRoute(
+      MimicTransportService.decide(
         host: 'api.appvle.store',
         enabled: true,
-        tunnelUp: true,
-        cooldownUntil: now,
-        hostSuffixes: ['appvle.store'],
+        udpUp: true,
+        tcpUp: true,
+        udpCooldown: now.add(cool),
+        tcpCooldown: epoch,
+        hostSuffixes: suffixes,
         now: now,
       ),
-      isTrue,
+      'tcp',
+    );
+    expect(
+      MimicTransportService.decide(
+        host: 'api.appvle.store',
+        enabled: true,
+        udpUp: true,
+        tcpUp: true,
+        udpCooldown: now.add(cool),
+        tcpCooldown: now.add(cool),
+        hostSuffixes: suffixes,
+        now: now,
+      ),
+      'direct',
     );
   });
 
   test('matches whitelisted suffixes only', () {
-    const suffixes = ['appvle.store', 'gw-vpn.click'];
     for (final host in [
       'api.appvle.store',
       'appvle.store',
@@ -63,15 +86,17 @@ void main() {
       'panel.gw-vpn.click',
     ]) {
       expect(
-        MimicTransportService.shouldRoute(
+        MimicTransportService.decide(
           host: host,
           enabled: true,
-          tunnelUp: true,
-          cooldownUntil: DateTime.fromMillisecondsSinceEpoch(0),
+          udpUp: true,
+          tcpUp: false,
+          udpCooldown: epoch,
+          tcpCooldown: epoch,
           hostSuffixes: suffixes,
           now: now,
         ),
-        isTrue,
+        'udp',
         reason: host,
       );
     }
@@ -82,15 +107,17 @@ void main() {
       'appvle.store.attacker.net',
     ]) {
       expect(
-        MimicTransportService.shouldRoute(
+        MimicTransportService.decide(
           host: host,
           enabled: true,
-          tunnelUp: true,
-          cooldownUntil: DateTime.fromMillisecondsSinceEpoch(0),
+          udpUp: true,
+          tcpUp: true,
+          udpCooldown: epoch,
+          tcpCooldown: epoch,
           hostSuffixes: suffixes,
           now: now,
         ),
-        isFalse,
+        'direct',
         reason: host,
       );
     }
