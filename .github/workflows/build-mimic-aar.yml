@@ -1,0 +1,57 @@
+name: Build Mimic AAR
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'mimic_mobile/**'
+      - '.github/workflows/build-mimic-aar.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.0.12077973
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install NDK and gomobile
+        run: |
+          sdkmanager "ndk;27.0.12077973"
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+          gomobile init
+
+      - name: Bind AAR
+        run: |
+          cd mimic_mobile
+          go get github.com/Locon213/Mimic-Protocol@342ec1aac26c2ca795fe8de18b1ec2ca68965b5b
+          go mod tidy
+          gomobile bind -target=android -androidapi 24 -o /tmp/mimic.aar .
+
+      - name: Unpack AAR into the gradle module
+        run: |
+          unzip -o /tmp/mimic.aar -d /tmp/mimic_aar
+          mkdir -p android/mimic_engine/libs android/mimic_engine/src/main/jniLibs
+          cp /tmp/mimic_aar/classes.jar android/mimic_engine/libs/classes.jar
+          cp -r /tmp/mimic_aar/jni/* android/mimic_engine/src/main/jniLibs/
+
+      - name: Commit rebuilt engine
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android/mimic_engine mimic_mobile/go.mod mimic_mobile/go.sum
+          git diff --cached --quiet || git commit -m "build(mimic): rebuild engine AAR"
+          git push

@@ -131,6 +131,7 @@ dependencies {
     // Separate Hysteria2 engine (ported from gwapk). VLESS keeps using
     // flutter_v2ray_plus; only Hysteria2 servers are routed through this module.
     implementation(project(":hysteria2_engine"))
+    implementation(project(":mimic_engine"))
     // VLEE engine (SSH-tunnel protocol, 1:1 port of gwvpn-new/gw-tunnel).
     // Its libhev-socks5-tunnel.so + TProxyService come from hysteria2_engine.
     implementation(project(":vlee_engine"))
