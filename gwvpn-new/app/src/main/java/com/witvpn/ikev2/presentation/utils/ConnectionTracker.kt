@@ -77,7 +77,10 @@ object ConnectionTracker {
         stopHeartbeat()
         heartbeatJob = scope.launch {
             while (isActive) {
-                delay(60_000) // every 60 seconds
+                // Интервал и вкл/выкл читаем на каждом такте: меняются из
+                // Firebase Remote Config без обновления приложения.
+                delay(RemoteConfigManager.getHeartbeatIntervalSeconds(context) * 1000)
+                if (!RemoteConfigManager.isHeartbeatEnabled(context)) break
                 try {
                     val body = FormBody.Builder()
                         .add("userId", userId)

@@ -41,20 +41,20 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        // Дефолт — wildcard-маска: приложение само подставит случайный субдомен
-        // (*.api.gwapp.store), а при блокировке хоста — сгенерирует новый.
-        resValue("string", "base_url", "https://*.api.gwapp.store/vpn/api/v1/")
+        // Дефолт — wildcard-маска в формате gwenc1 (SecretCodec): в APK нет
+        // открытых https:// строк. Расшифровка — в RemoteConfigManager.resolve().
+        resValue("string", "base_url", "gwenc1:w3xk0bvSZcjcZ6emx4epdpddXoizz2vH1We6pYLUabSXu2KMvA==")
 
         // Ссылка-подписка (subscription) со списком vless/hysteria2 нод.
         // Как и base_url — это лишь ДЕФОЛТ; актуальное значение приходит из
         // Firebase Remote Config (ключ subscription_url) и может быть заменено
         // из консоли Firebase без выпуска обновления в Google Play.
-        resValue("string", "subscription_url", "https://subs.gw-vpn.click/jzp2_Fc1rqXDrBu1")
+        resValue("string", "subscription_url", "gwenc1:tNd3roZuvGDHsaCT075ds6bBmKdeh118iJ6Fe4CcZrtw2dRptJe7Yoy8")
 
         // CAS.AI application identifier from the CAS dashboard.
         buildConfigField("String", "CAS_ID", '"app.greywebs.vpn"')
 
-        buildConfigField("String", "GRAYS_BILLING_URL", '"https://*.api.gwapp.store/vpn/client/payment/new?userId=%s"')
+        buildConfigField("String", "GRAYS_BILLING_URL", '"gwenc1:cofCpIGYqF+LZc9ph5trr2C/fp96w7d8m7vGZ8jcZ6emx4epdpddXoizz2vH1We6pYLUabSXu2KMvA=="')
         buildConfigField("boolean", "CHECK_IN_APP_UPDATES", "true")
 
         ndk {

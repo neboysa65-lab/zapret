@@ -7,9 +7,11 @@
     доменами, что раньше были «зашиты» в build.gradle, поэтому поведение
     приложения без Remote Config остаётся прежним.
 
-    Чтобы сменить домен «на лету» — НЕ трогайте этот файл, а измените параметр
-    в консоли Firebase → Remote Config (ключи api_base_url, payment_url,
-    subscription_url).
+    URL-значения закодированы (формат gwenc1:..., см. SecretCodec) — в APK
+    нет открытых https:// строк. В консоли Firebase используйте тот же формат;
+    открытый текст тоже принимается (legacy). Чтобы сменить домен «на лету» —
+    НЕ трогайте этот файл, а измените параметр в консоли Firebase → Remote
+    Config (api_base_url, payment_url, subscription_url).
 -->
 <defaultsMap>
     <!-- Дефолт — wildcard-маска: приложение само подставляет случайный
@@ -17,14 +19,24 @@
          в консоли Firebase → Remote Config (api_base_url / payment_url). -->
     <entry>
         <key>api_base_url</key>
-        <value>https://*.api.gwapp.store/vpn/api/v1/</value>
+        <value>gwenc1:w3xk0bvSZcjcZ6emx4epdpddXoizz2vH1We6pYLUabSXu2KMvA==</value>
     </entry>
     <entry>
         <key>payment_url</key>
-        <value>https://*.api.gwapp.store/vpn/client/payment/new?userId=%s</value>
+        <value>gwenc1:cofCpIGYqF+LZc9ph5trr2C/fp96w7d8m7vGZ8jcZ6emx4epdpddXoizz2vH1We6pYLUabSXu2KMvA==</value>
     </entry>
     <entry>
         <key>subscription_url</key>
-        <value>https://sub.gw-vpn.click/jzp2_Fc1rqXDrBu1</value>
+        <value>gwenc1:m4q+fGrTXYZjw4x4gGejaX2QnWGCqrySpNChkNOxu3DZ1Gm0l7tijLw=</value>
+    </entry>
+    <!-- Периодический heartbeat /user/connection/update: интервал (сек,
+         зажимается 15..240) и общий выключатель. -->
+    <entry>
+        <key>heartbeat_enabled</key>
+        <value>true</value>
+    </entry>
+    <entry>
+        <key>heartbeat_interval_seconds</key>
+        <value>60</value>
     </entry>
 </defaultsMap>

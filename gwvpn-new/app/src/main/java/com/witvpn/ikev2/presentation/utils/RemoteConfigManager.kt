@@ -29,9 +29,19 @@ import java.security.SecureRandom
  *   3) Значение по умолчанию, зашитое в ресурсы/BuildConfig (старое поведение).
  *
  * Ключи Remote Config (их и надо менять в панели Firebase):
- *   - api_base_url     — базовый URL API, напр. https://api.example.com/vpn/api/v1/
- *   - payment_url      — URL оплаты с плейсхолдером %s для userId
- *   - subscription_url — URL подписки со списком vless/hysteria2 нод
+ *   - api_base_url              — базовый URL API
+ *   - payment_url               — URL оплаты с плейсхолдером %s для userId
+ *   - subscription_url          — URL подписки со списком vless/hysteria2 нод
+ *   - heartbeat_enabled         — вкл/выкл периодического heartbeat (true/false)
+ *   - heartbeat_interval_seconds — период heartbeat в секундах (зажимается 15..240)
+ *
+ * URL-значения в консоли и в дефолтах APK хранятся закодированными
+ * (формат gwenc1:..., см. SecretCodec) — в Remote Config JSON и в билде нет
+ * открытых https:// строк. decode() принимает и открытый текст, поэтому
+ * значения в консоли можно менять постепенно.
+ * ВАЖНО: переводить консоль на закодированные значения можно только когда
+ * старые версии приложения (без decode) почти полностью ушли из онлайна —
+ * иначе они прочитают закодированную строку как URL и сломаются.
  *
  * Поддержка wildcard-масок (защита от блокировок домена):
  *   Вместо конкретного домена в api_base_url / payment_url можно указать маску
@@ -48,6 +58,12 @@ object RemoteConfigManager {
     const val KEY_API_BASE_URL = "api_base_url"
     const val KEY_PAYMENT_URL = "payment_url"
     const val KEY_SUBSCRIPTION_URL = "subscription_url"
+    const val KEY_HEARTBEAT_ENABLED = "heartbeat_enabled"
+    const val KEY_HEARTBEAT_INTERVAL_SECONDS = "heartbeat_interval_seconds"
+
+    private const val MIN_HEARTBEAT_SECONDS = 15L
+    private const val MAX_HEARTBEAT_SECONDS = 240L
+    private const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60L
 
     private const val PREFS_NAME = "remote_config_cache"
     private const val PREF_WILDCARD_LABEL = "wildcard_subdomain_label"
@@ -155,6 +171,31 @@ object RemoteConfigManager {
     }
 
     /**
+     * Включён ли heartbeat (периодические action=heartbeat). Выключение
+     * останавливает только периодические запросы; connect/disconnect уходят
+     * всегда, иначе счётчик онлайна на бэкенде «зависает».
+     */
+    fun isHeartbeatEnabled(context: Context): Boolean {
+        val raw = resolve(context, KEY_HEARTBEAT_ENABLED, "true")
+        return raw.trim().lowercase() !in setOf("false", "0", "off")
+    }
+
+    /**
+     * Период heartbeat в секундах. Зажат в [15..240]: снизу — защита от
+     * флуда в WAF при опечатке в консоли, сверху — окно онлайна на бэкенде
+     * (ONLINE_WINDOW_MINUTES = 5 минут), больший интервал роняет счётчик.
+     */
+    fun getHeartbeatIntervalSeconds(context: Context): Long {
+        val raw = resolve(
+            context,
+            key = KEY_HEARTBEAT_INTERVAL_SECONDS,
+            resourceDefault = DEFAULT_HEARTBEAT_INTERVAL_SECONDS.toString()
+        )
+        return raw.trim().toLongOrNull()?.coerceIn(MIN_HEARTBEAT_SECONDS, MAX_HEARTBEAT_SECONDS)
+            ?: DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+    }
+
+    /**
      * Ротация случайного субдомена wildcard-маски + возврат нового api_base_url.
      * Вернёт null, если в конфиге нет маски — тогда ротировать нечего.
      */
@@ -177,7 +218,7 @@ object RemoteConfigManager {
         if (firebaseAvailable) {
             try {
                 val remote = remoteConfig?.getString(key).orEmpty()
-                if (remote.isNotBlank()) return remote
+                if (remote.isNotBlank()) return SecretCodec.decode(remote)
             } catch (e: Throwable) {
                 Timber.e(e, "RemoteConfig: read '$key' failed")
             }
@@ -186,10 +227,11 @@ object RemoteConfigManager {
         val cached = context
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(key, null)
-        if (!cached.isNullOrBlank()) return cached
+        if (!cached.isNullOrBlank()) return SecretCodec.decode(cached)
 
-        // 3) Дефолт (старое поведение)
-        return resourceDefault
+        // 3) Дефолт (старое поведение); в ресурсах/BuildConfig он хранится
+        // в формате gwenc1:... — расшифровываем здесь, в единственной точке.
+        return SecretCodec.decode(resourceDefault)
     }
 
     private fun persist(context: Context, key: String, value: String) {
