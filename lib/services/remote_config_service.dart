@@ -123,8 +123,12 @@ class RemoteConfigService {
 
     final panel = _resolveDecoded(rc.getString(kEncryptedPanelUrl));
     final sub = _resolveDecoded(rc.getString(kEncryptedSubUrl));
-    if (_looksValid(panel)) ApiConfig.panelBaseUrl = _clean(panel);
-    if (_looksValid(sub)) ApiConfig.subBaseUrl = _clean(sub);
+    if (panel != null && _looksValid(panel)) {
+      ApiConfig.panelBaseUrl = _clean(panel);
+    }
+    if (sub != null && _looksValid(sub)) {
+      ApiConfig.subBaseUrl = _clean(sub);
+    }
 
     if (kDebugMode) {
       debugPrint('RemoteConfig applied → api=${ApiConfig.baseUrl}, '
