@@ -218,7 +218,13 @@ object RemoteConfigManager {
         if (firebaseAvailable) {
             try {
                 val remote = remoteConfig?.getString(key).orEmpty()
-                if (remote.isNotBlank()) return SecretCodec.decode(remote)
+                if (remote.isNotBlank()) {
+                    val decoded = SecretCodec.decode(remote)
+                    if (isValidDecoded(remote, decoded)) return decoded
+                    // Битое закодированное значение (опечатка в консоли, сбой
+                    // Firebase) не должно убивать URL — идём по fallback-цепочке.
+                    Timber.w("RemoteConfig: '$key' has broken encoded value, falling back")
+                }
             } catch (e: Throwable) {
                 Timber.e(e, "RemoteConfig: read '$key' failed")
             }
@@ -227,12 +233,22 @@ object RemoteConfigManager {
         val cached = context
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(key, null)
-        if (!cached.isNullOrBlank()) return SecretCodec.decode(cached)
+        if (!cached.isNullOrBlank()) {
+            val decoded = SecretCodec.decode(cached)
+            if (isValidDecoded(cached, decoded)) return decoded
+        }
 
         // 3) Дефолт (старое поведение); в ресурсах/BuildConfig он хранится
         // в формате gwenc1:... — расшифровываем здесь, в единственной точке.
         return SecretCodec.decode(resourceDefault)
     }
+
+    /**
+     * Расшифрованное закодированное значение обязано быть URL. Значения без
+     * префикса (plaintext legacy, флаги, числа) проходят всегда.
+     */
+    private fun isValidDecoded(raw: String, decoded: String): Boolean =
+        !SecretCodec.isEncoded(raw) || decoded.contains("://")
 
     private fun persist(context: Context, key: String, value: String) {
         if (value.isBlank()) return

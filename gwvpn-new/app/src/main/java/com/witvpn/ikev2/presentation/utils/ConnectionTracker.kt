@@ -22,6 +22,9 @@ object ConnectionTracker {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     fun reportConnect(context: Context, userId: String, serverIp: String, protocol: String = "ikev2") {
+        // ApplicationContext: heartbeat живёт дольше экрана, контекст Fragment
+        // в долгом цикле утёк бы до Activity.
+        val appContext = context.applicationContext
         if (protocol.equals("ikev2", ignoreCase = true)) {
             // IKEv2 не репортим: онлайн считается на стороне API по метрикам
             // самих серверов. Останавливаем возможный heartbeat от прошлой
@@ -39,7 +42,7 @@ object ConnectionTracker {
                     .add("action", "connect")
                     .build()
                 val request = Request.Builder()
-                    .url("${getBaseUrl(context)}/user/connection/update")
+                    .url("${getBaseUrl(appContext)}/user/connection/update")
                     .post(body)
                     .build()
                 client.newCall(request).execute().close()
@@ -48,10 +51,11 @@ object ConnectionTracker {
                 Timber.e(e, "ConnectionTracker: failed to report connect")
             }
         }
-        startHeartbeat(userId, serverIp, protocol, context)
+        startHeartbeat(userId, serverIp, protocol, appContext)
     }
 
     fun reportDisconnect(context: Context, userId: String) {
+        val appContext = context.applicationContext
         stopHeartbeat()
         scope.launch {
             try {
@@ -62,7 +66,7 @@ object ConnectionTracker {
                     .add("action", "disconnect")
                     .build()
                 val request = Request.Builder()
-                    .url("${getBaseUrl(context)}/user/connection/update")
+                    .url("${getBaseUrl(appContext)}/user/connection/update")
                     .post(body)
                     .build()
                 client.newCall(request).execute().close()
