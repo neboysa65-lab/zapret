@@ -18,11 +18,9 @@ import okhttp3.Request
 
 object VlessManager {
     private const val TAG = "VlessManager"
-    // Домен подписки больше НЕ зашит здесь — он берётся из Firebase Remote Config
-    // (ключ subscription_url) через RemoteConfigManager. Дефолт (если Firebase
-    // недоступен) лежит в res string subscription_url и совпадает со старым
-    // «зашитым» адресом. Это позволяет менять домен «на лету» из консоли Firebase
-    // при блокировке, без выпуска обновления в Google Play.
+    // Домен подписки больше НЕ зашит здесь — он берётся из Firebase Remote
+    // Config (ключ encrypted_subscription_url, формат gwenc1) через
+    // RemoteConfigManager. Открытые subscription_url новые версии игнорируют.
 
     var vlessServers: List<VlessConfig> = emptyList()
     var selectedServer: VlessConfig? = null
@@ -36,37 +34,41 @@ object VlessManager {
         val subscriptionUrl = RemoteConfigManager.getSubscriptionUrl(appContext)
         GlobalScope.launch(Dispatchers.IO) {
             try {
-                Log.i(TAG, "Fetching subscription from: $subscriptionUrl")
+                // Сам URL в логи не пишем: он виден в logcat/Logcat-сборщиках,
+                // а защита домена — часть схемы сокрытия (gwenc1).
+                Log.i(TAG, "Fetching subscription")
                 val request = Request.Builder().url(subscriptionUrl).build()
-                val response = client.newCall(request).execute()
-                val body = response.body?.string() ?: ""
-                
-                if (response.isSuccessful && body.isNotEmpty()) {
-                    // vless:// + hysteria2:// / hy2:// из одной base64-подписки
-                    val servers = VlessParser.parseSubscription(body)
-                    Log.i(TAG, "Subscription parsed: ${servers.size} nodes " +
-                        "(vless=${servers.count { !it.isHysteria2() }}, " +
-                        "hy2=${servers.count { it.isHysteria2() }})")
-                    withContext(Dispatchers.Main) {
-                        vlessServers = servers
-                        // если выбранной ноды больше нет в списке — сброс
-                        if (selectedServer != null &&
-                            servers.none {
-                                it.address == selectedServer?.address &&
-                                    it.port == selectedServer?.port &&
-                                    it.uuid == selectedServer?.uuid &&
-                                    it.protocol == selectedServer?.protocol
+
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string() ?: ""
+
+                    if (response.isSuccessful && body.isNotEmpty()) {
+                        // vless:// + hysteria2:// / hy2:// из одной base64-подписки
+                        val servers = VlessParser.parseSubscription(body)
+                        Log.i(TAG, "Subscription parsed: ${servers.size} nodes " +
+                            "(vless=${servers.count { !it.isHysteria2() }}, " +
+                            "hy2=${servers.count { it.isHysteria2() }})")
+                        withContext(Dispatchers.Main) {
+                            vlessServers = servers
+                            // если выбранной ноды больше нет в списке — сброс
+                            if (selectedServer != null &&
+                                servers.none {
+                                    it.address == selectedServer?.address &&
+                                        it.port == selectedServer?.port &&
+                                        it.uuid == selectedServer?.uuid &&
+                                        it.protocol == selectedServer?.protocol
+                                }
+                            ) {
+                                selectedServer = null
                             }
-                        ) {
-                            selectedServer = null
+                            if (selectedServer == null && servers.isNotEmpty()) {
+                                selectedServer = servers[0]
+                            }
+                            callback(servers.isNotEmpty())
                         }
-                        if (selectedServer == null && servers.isNotEmpty()) {
-                            selectedServer = servers[0]
-                        }
-                        callback(servers.isNotEmpty())
+                    } else {
+                        withContext(Dispatchers.Main) { callback(false) }
                     }
-                } else {
-                    withContext(Dispatchers.Main) { callback(false) }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
