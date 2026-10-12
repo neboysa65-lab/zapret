@@ -32,6 +32,14 @@ import java.security.SecureRandom
  *   - api_base_url              — базовый URL API
  *   - payment_url               — URL оплаты с плейсхолдером %s для userId
  *   - subscription_url          — URL подписки со списком vless/hysteria2 нод
+ *   - encrypted_api_url         — то же, но в формате gwenc1 (SecretCodec)
+ *   - encrypted_payment_url     — то же, но в формате gwenc1
+ *   - encrypted_subscription_url— то же, но в формате gwenc1
+ *
+ * Приоритет чтения URL: encrypted_* -> обычный ключ -> кэш -> дефолт APK.
+ * Новый клиент берёт значение из encrypted_* (в консоли могут жить ОБА
+ * варианта: старые версии читают открытый ключ, новые — закодированный,
+ * переезд происходит без поломки кого-либо).
  *   - heartbeat_enabled         — вкл/выкл периодического heartbeat (true/false)
  *   - heartbeat_interval_seconds — период heartbeat в секундах (зажимается 15..240)
  *
@@ -58,6 +66,9 @@ object RemoteConfigManager {
     const val KEY_API_BASE_URL = "api_base_url"
     const val KEY_PAYMENT_URL = "payment_url"
     const val KEY_SUBSCRIPTION_URL = "subscription_url"
+    const val KEY_ENCRYPTED_API_URL = "encrypted_api_url"
+    const val KEY_ENCRYPTED_PAYMENT_URL = "encrypted_payment_url"
+    const val KEY_ENCRYPTED_SUBSCRIPTION_URL = "encrypted_subscription_url"
     const val KEY_HEARTBEAT_ENABLED = "heartbeat_enabled"
     const val KEY_HEARTBEAT_INTERVAL_SECONDS = "heartbeat_interval_seconds"
 
@@ -115,6 +126,9 @@ object RemoteConfigManager {
                         persist(context, KEY_API_BASE_URL, rc.getString(KEY_API_BASE_URL))
                         persist(context, KEY_PAYMENT_URL, rc.getString(KEY_PAYMENT_URL))
                         persist(context, KEY_SUBSCRIPTION_URL, rc.getString(KEY_SUBSCRIPTION_URL))
+                        persist(context, KEY_ENCRYPTED_API_URL, rc.getString(KEY_ENCRYPTED_API_URL))
+                        persist(context, KEY_ENCRYPTED_PAYMENT_URL, rc.getString(KEY_ENCRYPTED_PAYMENT_URL))
+                        persist(context, KEY_ENCRYPTED_SUBSCRIPTION_URL, rc.getString(KEY_ENCRYPTED_SUBSCRIPTION_URL))
                     } else {
                         Timber.w(task.exception, "RemoteConfig: fetch/activate failed")
                     }
@@ -131,9 +145,10 @@ object RemoteConfigManager {
      * Базовый URL API. Всегда заканчивается на "/" — этого требует Retrofit.
      */
     fun getApiBaseUrl(context: Context): String {
-        val raw = resolve(
+        val raw = resolveUrl(
             context,
-            key = KEY_API_BASE_URL,
+            encryptedKey = KEY_ENCRYPTED_API_URL,
+            legacyKey = KEY_API_BASE_URL,
             resourceDefault = context.getString(R.string.base_url)
         )
         val expanded = expandWildcardTemplate(raw, context)
@@ -145,9 +160,10 @@ object RemoteConfigManager {
      */
     fun getPaymentUrl(context: Context): String {
         return expandWildcardTemplate(
-            resolve(
+            resolveUrl(
                 context,
-                key = KEY_PAYMENT_URL,
+                encryptedKey = KEY_ENCRYPTED_PAYMENT_URL,
+                legacyKey = KEY_PAYMENT_URL,
                 resourceDefault = BuildConfig.GRAYS_BILLING_URL
             ),
             context
@@ -163,9 +179,10 @@ object RemoteConfigManager {
      * значением из VlessManager (res string subscription_url).
      */
     fun getSubscriptionUrl(context: Context): String {
-        return resolve(
+        return resolveUrl(
             context,
-            key = KEY_SUBSCRIPTION_URL,
+            encryptedKey = KEY_ENCRYPTED_SUBSCRIPTION_URL,
+            legacyKey = KEY_SUBSCRIPTION_URL,
             resourceDefault = context.getString(R.string.subscription_url)
         )
     }
@@ -200,9 +217,10 @@ object RemoteConfigManager {
      * Вернёт null, если в конфиге нет маски — тогда ротировать нечего.
      */
     fun rotateWildcardAndReturnApiBaseUrl(context: Context): String? {
-        val raw = resolve(
+        val raw = resolveUrl(
             context,
-            key = KEY_API_BASE_URL,
+            encryptedKey = KEY_ENCRYPTED_API_URL,
+            legacyKey = KEY_API_BASE_URL,
             resourceDefault = context.getString(R.string.base_url)
         )
         if (!isWildcardTemplate(raw)) return null
@@ -213,34 +231,54 @@ object RemoteConfigManager {
 
     // --- внутреннее ---
 
+    /**
+     * Чтение URL-ключа с приоритетом encrypted_* и валидацией расшифровки.
+     * Битое значение любого источника пропускается — работает следующий.
+     */
+    private fun resolveUrl(
+        context: Context,
+        encryptedKey: String,
+        legacyKey: String,
+        resourceDefault: String
+    ): String {
+        if (firebaseAvailable) {
+            try {
+                for (key in listOf(encryptedKey, legacyKey)) {
+                    val raw = remoteConfig?.getString(key).orEmpty()
+                    if (raw.isBlank()) continue
+                    val decoded = SecretCodec.decode(raw)
+                    if (isValidDecoded(raw, decoded)) return decoded
+                    Timber.w("RemoteConfig: '$key' has broken encoded value, trying next source")
+                }
+            } catch (e: Throwable) {
+                Timber.e(e, "RemoteConfig: read URL keys failed")
+            }
+        }
+        val stored = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        for (key in listOf(encryptedKey, legacyKey)) {
+            val cached = stored.getString(key, null)
+            if (cached.isNullOrBlank()) continue
+            val decoded = SecretCodec.decode(cached)
+            if (isValidDecoded(cached, decoded)) return decoded
+        }
+        return SecretCodec.decode(resourceDefault)
+    }
+
     private fun resolve(context: Context, key: String, resourceDefault: String): String {
-        // 1) Firebase Remote Config (активное значение)
+        // Для не-URL значений (флаги/числа): Firebase -> кэш -> дефолт.
         if (firebaseAvailable) {
             try {
                 val remote = remoteConfig?.getString(key).orEmpty()
-                if (remote.isNotBlank()) {
-                    val decoded = SecretCodec.decode(remote)
-                    if (isValidDecoded(remote, decoded)) return decoded
-                    // Битое закодированное значение (опечатка в консоли, сбой
-                    // Firebase) не должно убивать URL — идём по fallback-цепочке.
-                    Timber.w("RemoteConfig: '$key' has broken encoded value, falling back")
-                }
+                if (remote.isNotBlank()) return remote.trim()
             } catch (e: Throwable) {
                 Timber.e(e, "RemoteConfig: read '$key' failed")
             }
         }
-        // 2) Последнее применённое значение из кэша
         val cached = context
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(key, null)
-        if (!cached.isNullOrBlank()) {
-            val decoded = SecretCodec.decode(cached)
-            if (isValidDecoded(cached, decoded)) return decoded
-        }
-
-        // 3) Дефолт (старое поведение); в ресурсах/BuildConfig он хранится
-        // в формате gwenc1:... — расшифровываем здесь, в единственной точке.
-        return SecretCodec.decode(resourceDefault)
+        if (!cached.isNullOrBlank()) return cached.trim()
+        return resourceDefault
     }
 
     /**
