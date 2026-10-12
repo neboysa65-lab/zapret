@@ -4,6 +4,7 @@ import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
 
 import '../config/api_config.dart';
+import '../config/secret_codec.dart';
 import 'api_host_service.dart';
 
 /// Сервис динамического обновления доменов через Firebase Remote Config.
@@ -14,20 +15,23 @@ import 'api_host_service.dart';
 ///   2. Скачиваем актуальные значения из Firebase и активируем их.
 ///   3. Переносим значения в [ApiConfig], откуда их читает весь остальной код.
 ///
-/// Ключи в консоли Firebase Remote Config:
-///   - `api_base_url`   → [ApiConfig.baseUrl] через [ApiHostService]: обычный
-///     URL или wildcard-шаблон `*.api.example.com` (рандомный поддомен
-///     на устройство с авто-ротацией при блокировке)
-///   - `panel_base_url` → [ApiConfig.panelBaseUrl]
-///   - `sub_base_url`   → [ApiConfig.subBaseUrl]
+/// Ключи в консоли Firebase Remote Config (значения в формате gwenc1,
+/// см. [SecretCodec]; открытые api_base_url/panel_base_url/sub_base_url
+/// из старых версий консоли намеренно НЕ читаются — в JSON Remote Config
+/// не должно быть открытых URL для новых версий):
+///   - `encrypted_api_url`   → [ApiConfig.baseUrl] через [ApiHostService]:
+///     закодированный URL или wildcard-шаблон `*.api.example.com`
+///     (рандомный поддомен на устройство с авто-ротацией при блокировке)
+///   - `encrypted_panel_url` → [ApiConfig.panelBaseUrl]
+///   - `encrypted_sub_url`   → [ApiConfig.subBaseUrl]
 class RemoteConfigService {
   RemoteConfigService._();
   static final RemoteConfigService instance = RemoteConfigService._();
 
   // Названия ключей — держим в одном месте, чтобы не опечататься.
-  static const String kApiBaseUrl = 'api_base_url';
-  static const String kPanelBaseUrl = 'panel_base_url';
-  static const String kSubBaseUrl = 'sub_base_url';
+  static const String kEncryptedApiUrl = 'encrypted_api_url';
+  static const String kEncryptedPanelUrl = 'encrypted_panel_url';
+  static const String kEncryptedSubUrl = 'encrypted_sub_url';
 
   /// Жёсткий таймаут на весь fetchAndActivate. Если Firebase зависает
   /// (провайдер рвёт соединение), не держим главный поток дольше этого
@@ -43,13 +47,13 @@ class RemoteConfigService {
       final rc = FirebaseRemoteConfig.instance;
       _rc = rc;
 
-      // Значения по умолчанию = зашитые домены (fallback). Для API берём
-      // именно дефолт, а не текущий baseUrl: он может быть выбранным
-      // поддоменом шаблона.
+      // Значения по умолчанию = зашитые домены (fallback) в формате gwenc1.
+      // Для API берём именно дефолт, а не текущий baseUrl: он может быть
+      // выбранным поддоменом шаблона.
       await rc.setDefaults(<String, dynamic>{
-        kApiBaseUrl: ApiConfig.defaultBaseUrl,
-        kPanelBaseUrl: ApiConfig.panelBaseUrl,
-        kSubBaseUrl: ApiConfig.subBaseUrl,
+        kEncryptedApiUrl: ApiConfig.defaultBaseUrlEncrypted,
+        kEncryptedPanelUrl: ApiConfig.panelBaseUrlEncrypted,
+        kEncryptedSubUrl: ApiConfig.subBaseUrlEncrypted,
       });
 
       await rc.setConfigSettings(RemoteConfigSettings(
@@ -103,18 +107,22 @@ class RemoteConfigService {
   }
 
   void _applyToApiConfig(FirebaseRemoteConfig rc) {
-    // Только значение, реально пришедшее из Remote Config. Если Firebase не
-    // ответил (fetch не прошёл или таймаут), rc отдаёт дефолт из setDefaults —
-    // применить его значило бы затереть сохранённый домен и вернуть клиента
-    // на зашитый адрес.
-    final apiValue = rc.getValue(kApiBaseUrl);
+    // Только значение, реально пришедшее из Remote Config (source ==
+    // valueRemote). Если Firebase не ответил, rc отдаёт дефолт из
+    // setDefaults — применить его значило бы затереть сохранённый домен.
+    // Значения приходят закодированными (gwenc1) — расшифровываем здесь,
+    // непосредственно перед применением.
+    final apiValue = rc.getValue(kEncryptedApiUrl);
     if (apiValue.source == ValueSource.valueRemote) {
-      // Валидирует сам: принимает и обычный URL, и wildcard-шаблон.
-      ApiHostService.instance.apply(apiValue.asString());
+      final decoded = _resolveDecoded(apiValue.asString());
+      if (decoded != null) {
+        // Валидирует сам: принимает и обычный URL, и wildcard-шаблон.
+        ApiHostService.instance.apply(decoded);
+      }
     }
 
-    final panel = rc.getString(kPanelBaseUrl);
-    final sub = rc.getString(kSubBaseUrl);
+    final panel = _resolveDecoded(rc.getString(kEncryptedPanelUrl));
+    final sub = _resolveDecoded(rc.getString(kEncryptedSubUrl));
     if (_looksValid(panel)) ApiConfig.panelBaseUrl = _clean(panel);
     if (_looksValid(sub)) ApiConfig.subBaseUrl = _clean(sub);
 
@@ -126,9 +134,23 @@ class RemoteConfigService {
 
   /// Отсекаем мусор: пустые строки и значения без http-схемы,
   /// чтобы случайная опечатка в консоли не сломала приложение.
-  bool _looksValid(String value) {
-    final v = value.trim();
+  bool _looksValid(String? value) {
+    final v = value?.trim() ?? '';
     return v.startsWith('http://') || v.startsWith('https://');
+  }
+
+  /// Расшифровка значения из Remote Config. Битое закодированное значение
+  /// (опечатка в консоли) возвращает null — источник пропускается,
+  /// приложение работает на сохранённом/дефолтном домене. Plaintext
+  /// (значение без префикса) проходит как есть.
+  String? _resolveDecoded(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return null;
+    final decoded = SecretCodec.decode(trimmed);
+    if (SecretCodec.isEncoded(trimmed) && !_looksValid(decoded)) {
+      return null;
+    }
+    return decoded;
   }
 
   /// Убираем завершающий слэш, чтобы не было двойных `//` при склейке путей.
