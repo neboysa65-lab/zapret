@@ -44,6 +44,9 @@ class GraysBillingFragment: BaseFragment<FragmentGreysBillingBinding>(R.layout.f
             if (userId != null) {
                 // URL оплаты берём из Remote Config (fallback — BuildConfig.GRAYS_BILLING_URL).
                 val paymentUrl = RemoteConfigManager.getPaymentUrl(requireContext())
+                (binding.webView.webViewClient as? BillingWebClient)?.onRetry = {
+                    binding.webView.loadUrl(paymentUrl.format(userId))
+                }
                 binding.webView.loadUrl(paymentUrl.format(userId))
             } else {
                 Toast.makeText(context, "userId not defined", Toast.LENGTH_SHORT).show()
