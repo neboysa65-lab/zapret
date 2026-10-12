@@ -51,12 +51,12 @@ void main() {
       expect(SecretCodec.isEncoded(null), isFalse);
     });
 
-    test('дефолты ApiConfig расшифровываются в ожидаемые домены', () {
-      expect(ApiConfig.defaultBaseUrl, 'https://media-ru.gwapp.store');
-      expect(ApiConfig.baseUrl, 'https://media-ru.gwapp.store');
-      expect(ApiConfig.panelBaseUrl, 'https://panel.gw-vpn.click');
-      expect(ApiConfig.subBaseUrl, 'https://sub.gw-vpn.click');
-      expect(SecretCodec.isEncoded(ApiConfig.defaultBaseUrlEncrypted), isTrue);
+    test('в билде нет зашитых доменов — URL только из Remote Config', () {
+      expect(ApiConfig.defaultBaseUrlEncrypted, isEmpty);
+      expect(ApiConfig.defaultBaseUrl, isEmpty);
+      expect(ApiConfig.baseUrl, isEmpty);
+      expect(ApiConfig.panelBaseUrl, isEmpty);
+      expect(ApiConfig.subBaseUrl, isEmpty);
     });
   });
 }

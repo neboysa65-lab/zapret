@@ -9,34 +9,31 @@
 /// Поля намеренно НЕ `const` и НЕ `final`, чтобы их можно было
 /// перезаписать во время выполнения (см. RemoteConfigService.applyToApiConfig).
 class ApiConfig {
-  /// Дефолтные домены хранятся ЗАКОДИРОВАННЫМИ (формат gwenc1, см.
-  /// [SecretCodec]) — в билде нет открытых https:// строк. Дефолт ниже —
-  /// актуальный домен media-ru. Смена домена без релиза — ключ
-  /// encrypted_api_url в Firebase Remote Config (см. RemoteConfigService).
-  static const String defaultBaseUrlEncrypted =
-      'gwenc1:fKtm2IhqepasY5l2zXjGzXC1YL/UabSXu2KMvA==';
-  static const String panelBaseUrlEncrypted =
-      'gwenc1:asmOrGvEnV6Kd89rx9p8r2Tc1Gm0l7tijLw=';
-  static const String subBaseUrlEncrypted =
-      'gwenc1:kJ1hgqq8kqTQoZDTsbtw2dRptJe7Yoy8';
+  /// ДОМЕНОВ В БИЛДЕ НЕТ: URL приходит только из Firebase Remote Config
+  /// (ключи encrypted_*, формат gwenc1 — см. RemoteConfigService). До первого
+  /// успешного fetch домены пусты; после — последнее значение сохраняется
+  /// в SharedPreferences и переживает отсутствие сети. НЕ удаляй пустоту:
+  /// зашитый URL = цель для реверс-инжиниринга.
+  static const String defaultBaseUrlEncrypted = '';
+  static const String panelBaseUrlEncrypted = '';
+  static const String subBaseUrlEncrypted = '';
 
-  /// Расшифрованный дефолт основного API-домена. Может быть и
-  /// wildcard-шаблоном (`https://*.api.example.com`), см. [ApiHostService].
-  static String get defaultBaseUrl => SecretCodec.decode(defaultBaseUrlEncrypted);
+  /// Пустой дефолт для совместимости с [ApiHostService] (fallback = no-op).
+  static String get defaultBaseUrl => '';
 
   /// Текущий основной API-домен (регистрация, тарифы, конфиги, оплата).
   /// Remote Config key: `encrypted_api_url` — закодированный gwenc1 URL или
   /// wildcard-шаблон. Пишет сюда только [ApiHostService].
-  static String baseUrl = SecretCodec.decode(defaultBaseUrlEncrypted);
+  static String baseUrl = '';
 
   /// Домен панели управления (метрики нод, статистика трафика).
   /// Remote Config key: `encrypted_panel_url` (gwenc1).
-  static String panelBaseUrl = SecretCodec.decode(panelBaseUrlEncrypted);
+  static String panelBaseUrl = '';
 
   /// Домен раздачи подписок (subscription). Сейчас его проксирует бэкенд,
   /// но ключ заведён на будущее, чтобы менять и его без релиза.
   /// Remote Config key: `encrypted_sub_url` (gwenc1).
-  static String subBaseUrl = SecretCodec.decode(subBaseUrlEncrypted);
+  static String subBaseUrl = '';
 
   // Локальная отладка (подставить в baseUrl вручную при необходимости):
   //   Эмулятор Android:      'http://10.0.2.2:8000'

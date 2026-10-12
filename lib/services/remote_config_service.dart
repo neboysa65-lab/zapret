@@ -47,9 +47,9 @@ class RemoteConfigService {
       final rc = FirebaseRemoteConfig.instance;
       _rc = rc;
 
-      // Значения по умолчанию = зашитые домены (fallback) в формате gwenc1.
-      // Для API берём именно дефолт, а не текущий baseUrl: он может быть
-      // выбранным поддоменом шаблона.
+      // Зашитых доменов в билде НЕТ — дефолты пустые. Значение API
+      // применяем только когда оно реально пришло из Remote Config
+      // (source == valueRemote), иначе затирали бы сохранённый домен.
       await rc.setDefaults(<String, dynamic>{
         kEncryptedApiUrl: ApiConfig.defaultBaseUrlEncrypted,
         kEncryptedPanelUrl: ApiConfig.panelBaseUrlEncrypted,

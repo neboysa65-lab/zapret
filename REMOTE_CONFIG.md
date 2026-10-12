@@ -11,9 +11,9 @@
 
 | Ключ в Remote Config | Что это | Значение по умолчанию |
 |----------------------|---------|-----------------------|
-| `encrypted_api_url`   | Основной API: регистрация, тарифы, конфиги, оплата. Закодированный (gwenc1) URL **или wildcard-шаблон** `*.api.example.com` (см. ниже). Открытые `api_base_url`/`panel_base_url`/`sub_base_url` новые версии НЕ читают | gwenc1-дефолт media-ru (`ApiConfig.defaultBaseUrlEncrypted`) |
-| `encrypted_panel_url` | Панель управления: метрики нод, статистика трафика (gwenc1) | gwenc1-дефолт `panel.gw-vpn.click` |
-| `encrypted_sub_url`   | Домен раздачи подписок (задел на будущее, gwenc1)  | gwenc1-дефолт `sub.gw-vpn.click` |
+| `encrypted_api_url`   | Основной API: регистрация, тарифы, конфиги, оплата. Закодированный (gwenc1) URL **или wildcard-шаблон** `*.api.example.com` (см. ниже). Открытые `api_base_url`/`panel_base_url`/`sub_base_url` новые версии НЕ читают | НЕТ: домены в билд не зашиты, до первого fetch их нет |
+| `encrypted_panel_url` | Панель управления: метрики нод, статистика трафика (gwenc1) | НЕТ (опционально) |
+| `encrypted_sub_url`   | Домен раздачи подписок (задел на будущее, gwenc1)  | НЕТ (опционально) |
 
 Значения по умолчанию лежат в `lib/config/api_config.dart` — они срабатывают
 только как запасной вариант, если Firebase недоступен (нет сети при первом запуске).
