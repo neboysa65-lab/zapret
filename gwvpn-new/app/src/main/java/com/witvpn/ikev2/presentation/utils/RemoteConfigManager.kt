@@ -81,9 +81,11 @@ object RemoteConfigManager {
     private val random = SecureRandom()
 
     // Как часто разрешаем реально ходить в сеть за конфигом.
-    // В debug — сразу (0), в release — раз в час, чтобы не упираться в троттлинг Firebase.
+    // В debug — сразу (0), в release — раз в 10 минут: смена домена/флагов
+    // доезжает до юзеров в пределах одного запуска. Firebase между интервалами
+    // отдаёт свой кэш, квота проекта с многократным запасом.
     private val MIN_FETCH_INTERVAL_SECONDS: Long =
-        if (BuildConfig.DEBUG) 0L else 3600L
+        if (BuildConfig.DEBUG) 0L else 600L
 
     @Volatile
     private var firebaseAvailable = false
