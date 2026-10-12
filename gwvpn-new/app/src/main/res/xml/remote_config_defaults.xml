@@ -8,25 +8,17 @@
     приложения без Remote Config остаётся прежним.
 
     URL-значения закодированы (формат gwenc1:..., см. SecretCodec) — в APK
-    нет открытых https:// строк. Новый клиент читает ключи encrypted_*,
-    старые версии — открытые api_base_url/payment_url/subscription_url.
-    Дефолты ниже — актуальный домен media-ru.
+    нет открытых https:// строк. Новый клиент читает ТОЛЬКО ключи
+    encrypted_* и игнорирует открытые api_base_url/payment_url/
+    subscription_url (они нужны лишь старым версиям приложения).
 -->
 <defaultsMap>
     <!-- Дефолт — wildcard-маска: приложение само подставляет случайный
          субдомен и меняет его при блокировке. Актуальное значение живёт
          в консоли Firebase → Remote Config (api_base_url / payment_url). -->
     <entry>
-        <key>api_base_url</key>
-        <value>gwenc1:cLTW1Kd6hV58iJ6He4CbfKtm2IhqepasY5l2zXjGzXC1YL/UabSXu2KMvA==</value>
-    </entry>
-    <entry>
         <key>encrypted_api_url</key>
         <value>gwenc1:cLTW1Kd6hV58iJ6He4CbfKtm2IhqepasY5l2zXjGzXC1YL/UabSXu2KMvA==</value>
-    </entry>
-    <entry>
-        <key>payment_url</key>
-        <value>gwenc1:06nW0pCrYNmKeXeJnbuMtr1hms1ncG++mqdeh158iJ6He4CbfKtm2IhqepasY5l2zXjGzXC1YL/UabSXu2KMvA==</value>
     </entry>
     <entry>
         <key>encrypted_payment_url</key>
@@ -34,10 +26,6 @@
     </entry>
     <entry>
         <key>encrypted_subscription_url</key>
-        <value>gwenc1:m4q+fGrTXYZjw4x4gGejaX2QnWGCqrySpNChkNOxu3DZ1Gm0l7tijLw=</value>
-    </entry>
-    <entry>
-        <key>subscription_url</key>
         <value>gwenc1:m4q+fGrTXYZjw4x4gGejaX2QnWGCqrySpNChkNOxu3DZ1Gm0l7tijLw=</value>
     </entry>
     <!-- Периодический heartbeat /user/connection/update: интервал (сек,

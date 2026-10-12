@@ -28,18 +28,16 @@ import java.security.SecureRandom
  *       использовать актуальный домен с прошлого запуска).
  *   3) Значение по умолчанию, зашитое в ресурсы/BuildConfig (старое поведение).
  *
- * Ключи Remote Config (их и надо менять в панели Firebase):
- *   - api_base_url              — базовый URL API
- *   - payment_url               — URL оплаты с плейсхолдером %s для userId
- *   - subscription_url          — URL подписки со списком vless/hysteria2 нод
- *   - encrypted_api_url         — то же, но в формате gwenc1 (SecretCodec)
- *   - encrypted_payment_url     — то же, но в формате gwenc1
- *   - encrypted_subscription_url— то же, но в формате gwenc1
+ * Ключи Remote Config:
+ *   - encrypted_api_url          — базовый URL API (формат gwenc1, SecretCodec)
+ *   - encrypted_payment_url      — URL оплаты с %s для userId (gwenc1)
+ *   - encrypted_subscription_url — URL подписки (gwenc1)
+ *   - heartbeat_enabled / heartbeat_interval_seconds — управление heartbeat
  *
- * Приоритет чтения URL: encrypted_* -> обычный ключ -> кэш -> дефолт APK.
- * Новый клиент берёт значение из encrypted_* (в консоли могут жить ОБА
- * варианта: старые версии читают открытый ключ, новые — закодированный,
- * переезд происходит без поломки кого-либо).
+ * URL новый клиент читает ТОЛЬКО из encrypted_*: открытые api_base_url /
+ * payment_url / subscription_url (нужны старым версиям) намеренно
+ * игнорируются — в JSON Remote Config не должно быть URL, который выдают
+ * новые версии. Смена домена теперь только через encrypted_* (или дефолт APK).
  *   - heartbeat_enabled         — вкл/выкл периодического heartbeat (true/false)
  *   - heartbeat_interval_seconds — период heartbeat в секундах (зажимается 15..240)
  *
@@ -63,9 +61,6 @@ import java.security.SecureRandom
  */
 object RemoteConfigManager {
 
-    const val KEY_API_BASE_URL = "api_base_url"
-    const val KEY_PAYMENT_URL = "payment_url"
-    const val KEY_SUBSCRIPTION_URL = "subscription_url"
     const val KEY_ENCRYPTED_API_URL = "encrypted_api_url"
     const val KEY_ENCRYPTED_PAYMENT_URL = "encrypted_payment_url"
     const val KEY_ENCRYPTED_SUBSCRIPTION_URL = "encrypted_subscription_url"
@@ -123,9 +118,6 @@ object RemoteConfigManager {
                         Timber.d("RemoteConfig: fetch/activate ok (updated=${task.result})")
                         // Кэшируем актуальные значения, чтобы они были доступны
                         // синхронно уже на следующем холодном старте.
-                        persist(context, KEY_API_BASE_URL, rc.getString(KEY_API_BASE_URL))
-                        persist(context, KEY_PAYMENT_URL, rc.getString(KEY_PAYMENT_URL))
-                        persist(context, KEY_SUBSCRIPTION_URL, rc.getString(KEY_SUBSCRIPTION_URL))
                         persist(context, KEY_ENCRYPTED_API_URL, rc.getString(KEY_ENCRYPTED_API_URL))
                         persist(context, KEY_ENCRYPTED_PAYMENT_URL, rc.getString(KEY_ENCRYPTED_PAYMENT_URL))
                         persist(context, KEY_ENCRYPTED_SUBSCRIPTION_URL, rc.getString(KEY_ENCRYPTED_SUBSCRIPTION_URL))
@@ -148,7 +140,6 @@ object RemoteConfigManager {
         val raw = resolveUrl(
             context,
             encryptedKey = KEY_ENCRYPTED_API_URL,
-            legacyKey = KEY_API_BASE_URL,
             resourceDefault = context.getString(R.string.base_url)
         )
         val expanded = expandWildcardTemplate(raw, context)
@@ -163,7 +154,6 @@ object RemoteConfigManager {
             resolveUrl(
                 context,
                 encryptedKey = KEY_ENCRYPTED_PAYMENT_URL,
-                legacyKey = KEY_PAYMENT_URL,
                 resourceDefault = BuildConfig.GRAYS_BILLING_URL
             ),
             context
@@ -182,7 +172,6 @@ object RemoteConfigManager {
         return resolveUrl(
             context,
             encryptedKey = KEY_ENCRYPTED_SUBSCRIPTION_URL,
-            legacyKey = KEY_SUBSCRIPTION_URL,
             resourceDefault = context.getString(R.string.subscription_url)
         )
     }
@@ -220,7 +209,6 @@ object RemoteConfigManager {
         val raw = resolveUrl(
             context,
             encryptedKey = KEY_ENCRYPTED_API_URL,
-            legacyKey = KEY_API_BASE_URL,
             resourceDefault = context.getString(R.string.base_url)
         )
         if (!isWildcardTemplate(raw)) return null
@@ -232,32 +220,31 @@ object RemoteConfigManager {
     // --- внутреннее ---
 
     /**
-     * Чтение URL-ключа с приоритетом encrypted_* и валидацией расшифровки.
-     * Битое значение любого источника пропускается — работает следующий.
+     * Чтение URL ТОЛЬКО из encrypted_* ключа с валидацией расшифровки.
+     * Открытые ключи (api_base_url и т.п.) намеренно не читаются: их значения
+     * в JSON Remote Config видны перехватчикам, а в новых версиях их быть
+     * не должно. Битое значение пропускается — работает следующий источник.
      */
     private fun resolveUrl(
         context: Context,
         encryptedKey: String,
-        legacyKey: String,
         resourceDefault: String
     ): String {
         if (firebaseAvailable) {
             try {
-                for (key in listOf(encryptedKey, legacyKey)) {
-                    val raw = remoteConfig?.getString(key).orEmpty()
-                    if (raw.isBlank()) continue
+                val raw = remoteConfig?.getString(encryptedKey).orEmpty()
+                if (raw.isNotBlank()) {
                     val decoded = SecretCodec.decode(raw)
                     if (isValidDecoded(raw, decoded)) return decoded
-                    Timber.w("RemoteConfig: '$key' has broken encoded value, trying next source")
+                    Timber.w("RemoteConfig: '$encryptedKey' has broken encoded value, using cache/default")
                 }
             } catch (e: Throwable) {
                 Timber.e(e, "RemoteConfig: read URL keys failed")
             }
         }
         val stored = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        for (key in listOf(encryptedKey, legacyKey)) {
-            val cached = stored.getString(key, null)
-            if (cached.isNullOrBlank()) continue
+        val cached = stored.getString(encryptedKey, null)
+        if (!cached.isNullOrBlank()) {
             val decoded = SecretCodec.decode(cached)
             if (isValidDecoded(cached, decoded)) return decoded
         }
