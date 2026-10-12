@@ -52,6 +52,10 @@ Unit `mimic-api.service` слушает **UDP 443** (`ss -ulnp | grep 443`),
 TCP-фолбек — unit `mimic-api-tcp.service`, TCP 25565,
 `/opt/mimic/mimic-server-tcp`, сертификат `/opt/mimic/tcp-*.pem`
 (самоподписанный, пин в Remote Config `mimic_tcp_pin`).
+Дополнительный вход — unit `mimic-api-udp197.service`: тот же MTP на
+**45.95.96.197:8443** (отдельный бинарь `mimic-server-udp`, привязан к
+конкретному IP, т.к. UDP-сокет основного инстанса отвечает с основного
+IP и второй вход на том же порту 443 невозможен).
 Старое не отключено и не перезапущено: nginx, docker-контейнеры и прочие
 сервисы работают как раньше. Секрет равен секрету клиента
 (`ApiConfig.mimicSecret` / Remote Config `mimic_secret`).
