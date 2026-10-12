@@ -43,6 +43,17 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     }
     final url = '${ApiConfig.baseUrl}/pay?uid=$userId&tariff_id=${tariff.id}';
 
+    // Без Remote Config baseUrl пуст — открывать нечего (иначе WebView
+    // покажет системный экран ошибки с адресом).
+    if (Uri.tryParse(url)?.host.isEmpty ?? true) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Нет подключения. Проверьте интернет и попробуйте позже.')),
+      );
+      return;
+    }
+
     // Выбор тарифа — в WebView внутри приложения; сама оплата (wata.pro)
     // откроется во внешнем браузере. Поллинг премиума внутри PayWebScreen.
     final activated = await Navigator.push<bool>(
