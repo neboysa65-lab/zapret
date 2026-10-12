@@ -36,7 +36,6 @@ class MainActivity : FlutterActivity() {
     private var statusSink: EventChannel.EventSink? = null
     private var stateReceiver: BroadcastReceiver? = null
     private var awgBridge: AwgBridge? = null
-    private var mimicBridge: MimicBridge? = null
 
     private var vleeStatusSink: EventChannel.EventSink? = null
     private var vleeListener: VleeManager.StateListener? = null
@@ -48,7 +47,6 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         awgBridge = AwgBridge(this, flutterEngine.dartExecutor.binaryMessenger)
-        mimicBridge = MimicBridge(flutterEngine.dartExecutor.binaryMessenger)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->

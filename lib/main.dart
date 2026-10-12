@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -18,8 +17,6 @@ import 'screens/subscription_screen.dart';
 import 'providers/app_provider.dart';
 import 'providers/auth_provider.dart';
 import 'services/api_host_service.dart';
-import 'services/mimic_http_overrides.dart';
-import 'services/mimic_transport_service.dart';
 import 'services/notification_service.dart';
 import 'services/remote_config_service.dart';
 import 'firebase_options.dart';
@@ -32,11 +29,6 @@ import 'package:yandex_mobileads/mobile_ads.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Второй транспорт (MTP поверх UDP) для всех dart:io HTTP-клиентов:
-  // туннель в приоритете, HTTPS — фолбек. Ставим до первых запросов.
-  HttpOverrides.global = MimicHttpOverrides();
-  unawaited(MimicTransportService.instance.start());
 
   // Домен API с прошлого запуска: Remote Config отвечает не сразу (или не
   // отвечает, если Firebase заблокирован), а первые запросы уйдут раньше.

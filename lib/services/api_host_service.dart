@@ -7,7 +7,6 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api_config.dart';
-import 'mimic_transport_service.dart';
 
 /// Wildcard-шаблон из Remote Config: `*.api.example.com`
 /// (схема `https://` и порт необязательны).
@@ -129,7 +128,6 @@ class ApiHostService {
       response = await send(baseUrl);
     } catch (error) {
       if (!isConnectionFailure(error)) rethrow;
-      MimicTransportService.instance.noteRequestFailure();
       if (!_switchLabel(baseUrl)) rethrow;
       if (!idempotent && error is TimeoutException) rethrow;
       return send(ApiConfig.baseUrl);

@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 
 import '../config/api_config.dart';
 import 'api_host_service.dart';
-import 'mimic_transport_service.dart';
 
 /// Сервис динамического обновления доменов через Firebase Remote Config.
 ///
@@ -29,12 +28,6 @@ class RemoteConfigService {
   static const String kApiBaseUrl = 'api_base_url';
   static const String kPanelBaseUrl = 'panel_base_url';
   static const String kSubBaseUrl = 'sub_base_url';
-  static const String kMimicServer = 'mimic_server';
-  static const String kMimicTcpServer = 'mimic_tcp_server';
-  static const String kMimicTcpPin = 'mimic_tcp_pin';
-  static const String kMimicSecret = 'mimic_secret';
-  static const String kMimicEnabled = 'mimic_enabled';
-  static const String kMimicHosts = 'mimic_hosts';
 
   /// Жёсткий таймаут на весь fetchAndActivate. Если Firebase зависает
   /// (провайдер рвёт соединение), не держим главный поток дольше этого
@@ -57,12 +50,6 @@ class RemoteConfigService {
         kApiBaseUrl: ApiConfig.defaultBaseUrl,
         kPanelBaseUrl: ApiConfig.panelBaseUrl,
         kSubBaseUrl: ApiConfig.subBaseUrl,
-        kMimicServer: ApiConfig.mimicServer,
-        kMimicTcpServer: ApiConfig.mimicTcpServer,
-        kMimicTcpPin: ApiConfig.mimicTcpPin,
-        kMimicSecret: ApiConfig.mimicSecret,
-        kMimicEnabled: ApiConfig.mimicEnabled,
-        kMimicHosts: ApiConfig.mimicHostSuffixes.join(','),
       });
 
       await rc.setConfigSettings(RemoteConfigSettings(
@@ -87,7 +74,7 @@ class RemoteConfigService {
       });
 
       // Переносим в ApiConfig, чтобы весь код читал уже актуальные домены.
-    await _applyToApiConfig(rc);
+      _applyToApiConfig(rc);
     } catch (e, s) {
       // Нет сети / Firebase недоступен — работаем на дефолтах ApiConfig.
       if (kDebugMode) {
@@ -107,7 +94,7 @@ class RemoteConfigService {
         _hardTimeout,
         onTimeout: () => false,
       );
-      await _applyToApiConfig(rc);
+      _applyToApiConfig(rc);
       return activated;
     } catch (e) {
       if (kDebugMode) debugPrint('RemoteConfigService.refresh failed: $e');
@@ -115,7 +102,7 @@ class RemoteConfigService {
     }
   }
 
-  Future<void> _applyToApiConfig(FirebaseRemoteConfig rc) async {
+  void _applyToApiConfig(FirebaseRemoteConfig rc) {
     // Только значение, реально пришедшее из Remote Config. Если Firebase не
     // ответил (fetch не прошёл или таймаут), rc отдаёт дефолт из setDefaults —
     // применить его значило бы затереть сохранённый домен и вернуть клиента
@@ -130,39 +117,6 @@ class RemoteConfigService {
     final sub = rc.getString(kSubBaseUrl);
     if (_looksValid(panel)) ApiConfig.panelBaseUrl = _clean(panel);
     if (_looksValid(sub)) ApiConfig.subBaseUrl = _clean(sub);
-
-    // Второй транспорт (MTP). Применяем только то, что реально пришло из
-    // Remote Config: дефолты не должны затирать рабочий конфиг движка.
-    final mimicServer = rc.getValue(kMimicServer);
-    final mimicTcpServer = rc.getValue(kMimicTcpServer);
-    final mimicTcpPin = rc.getValue(kMimicTcpPin);
-    final mimicSecret = rc.getValue(kMimicSecret);
-    final mimicEnabled = rc.getValue(kMimicEnabled);
-    final mimicHosts = rc.getValue(kMimicHosts);
-    await MimicTransportService.instance.applyConfig(
-      server: mimicServer.source == ValueSource.valueRemote &&
-              _looksValidMimicEndpoint(mimicServer.asString())
-          ? mimicServer.asString().trim()
-          : null,
-      tcpServer: mimicTcpServer.source == ValueSource.valueRemote &&
-              _looksValidMimicEndpoint(mimicTcpServer.asString())
-          ? mimicTcpServer.asString().trim()
-          : null,
-      tcpPin: mimicTcpPin.source == ValueSource.valueRemote &&
-              mimicTcpPin.asString().trim().length >= 64
-          ? mimicTcpPin.asString().trim()
-          : null,
-      secret: mimicSecret.source == ValueSource.valueRemote &&
-              mimicSecret.asString().trim().length >= 16
-          ? mimicSecret.asString().trim()
-          : null,
-      enabled: mimicEnabled.source == ValueSource.valueRemote
-          ? mimicEnabled.asBool()
-          : null,
-      hostSuffixes: mimicHosts.source == ValueSource.valueRemote
-          ? mimicHosts.asString().split(',')
-          : null,
-    );
 
     if (kDebugMode) {
       debugPrint('RemoteConfig applied → api=${ApiConfig.baseUrl}, '
@@ -184,13 +138,5 @@ class RemoteConfigService {
       v = v.substring(0, v.length - 1);
     }
     return v;
-  }
-
-  /// `ip:port` для MTP-эндпоинта (порт обязателен).
-  bool _looksValidMimicEndpoint(String value) {
-    final v = value.trim();
-    final colon = v.lastIndexOf(':');
-    if (colon <= 0 || colon == v.length - 1) return false;
-    return int.tryParse(v.substring(colon + 1)) != null;
   }
 }

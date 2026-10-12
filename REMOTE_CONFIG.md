@@ -163,22 +163,3 @@ main() ──> Firebase.initializeApp()
 Чтобы значения подтягивались мгновенно (без кэша в 10 минут), временно поставьте
 в `RemoteConfigService.initialize()` `minimumFetchInterval: Duration.zero`.
 Не оставляйте так в релизе — это создаёт лишнюю нагрузку и риск троттлинга.
-
-## Второй транспорт (MTP / Mimic Protocol)
-
-Ключи второго транспорта к API (`docs/MIMIC_TRANSPORT.md`):
-
-- `mimic_enabled` — `true`/`false`, включение канала;
-- `mimic_server` — endpoint `ip:port` (UDP, сейчас `57.129.126.169:443`);
-- `mimic_tcp_server` — endpoint TCP-фолбека `ip:port`
-  (сейчас `57.129.126.169:25565`);
-- `mimic_tcp_pin` — sha256 SPKI сертификата TCP-фолбека (64 hex-символа;
-  меняется вместе с перевыпуском `/opt/mimic/tcp-*.pem` на проде);
-- `mimic_secret` — общий секрет движка (≥16 символов; при смене сначала
-  обновить `uuid:` в `/opt/mimic/server.yaml` на проде и перезапустить
-  только `mimic-api.service`, затем ключ здесь);
-- `mimic_hosts` — суффиксы доменов через запятую, которые разрешено
-  гнать через туннель (сейчас `appvle.store,vpnhub.xyz,gw-vpn.click`).
-
-Туннель в приоритете, HTTPS остаётся фолбеком: недоступный движок или
-кулюдаун после сбоя автоматически переключает запросы на прямой HTTPS.

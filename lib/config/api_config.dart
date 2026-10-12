@@ -28,35 +28,6 @@ class ApiConfig {
   /// Remote Config key: `sub_base_url`
   static String subBaseUrl = 'https://sub.gw-vpn.click';
 
-  // ─── Второй транспорт: MTP (Mimic Protocol) поверх UDP ───
-  // Прод: VPS 57.129.126.169, systemd unit mimic-api.service, /opt/mimic/.
-
-  /// Endpoint MTP-движка `ip:port` (UDP). Remote Config key: `mimic_server`.
-  static String mimicServer = '57.129.126.169:443';
-
-  /// Endpoint TCP-фолбека `ip:port` (TLS + пин SPKI).
-  /// Remote Config key: `mimic_tcp_server`.
-  static String mimicTcpServer = '57.129.126.169:25565';
-
-  /// Пин сертификата TCP-фолбека: sha256 от SPKI (hex, 64 символа).
-  /// Remote Config key: `mimic_tcp_pin`.
-  static String mimicTcpPin = 'fc2bf9d3f684be3e1ee6ef6f5121e460a5a98d371a1c08bcf9c9c673c346b9c6';
-
-  /// Общий секрет движка (он же «uuid» в терминологии Mimic).
-  /// Remote Config key: `mimic_secret`.
-  static String mimicSecret = '22c78a41db1f77073c3d218becfc51ea318e37f09716bd36';
-
-  /// Remote Config key: `mimic_enabled`.
-  static bool mimicEnabled = true;
-
-  /// Суффиксы доменов, которые разрешено гнать через туннель.
-  /// Remote Config key: `mimic_hosts` (через запятую).
-  static List<String> mimicHostSuffixes = [
-    'appvle.store',
-    'vpnhub.xyz',
-    'gw-vpn.click',
-  ];
-
   // Локальная отладка (подставить в baseUrl вручную при необходимости):
   //   Эмулятор Android:      'http://10.0.2.2:8000'
   //   Реальное устройство:   'http://192.168.1.42:8000'
