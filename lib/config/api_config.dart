@@ -36,7 +36,7 @@ class ApiConfig {
 
   /// Endpoint TCP-фолбека `ip:port` (TLS + пин SPKI).
   /// Remote Config key: `mimic_tcp_server`.
-  static String mimicTcpServer = '57.129.126.169:8443';
+  static String mimicTcpServer = '57.129.126.169:25565';
 
   /// Пин сертификата TCP-фолбека: sha256 от SPKI (hex, 64 символа).
   /// Remote Config key: `mimic_tcp_pin`.

@@ -171,7 +171,7 @@ main() ──> Firebase.initializeApp()
 - `mimic_enabled` — `true`/`false`, включение канала;
 - `mimic_server` — endpoint `ip:port` (UDP, сейчас `57.129.126.169:443`);
 - `mimic_tcp_server` — endpoint TCP-фолбека `ip:port`
-  (сейчас `57.129.126.169:8443`);
+  (сейчас `57.129.126.169:25565`);
 - `mimic_tcp_pin` — sha256 SPKI сертификата TCP-фолбека (64 hex-символа;
   меняется вместе с перевыпуском `/opt/mimic/tcp-*.pem` на проде);
 - `mimic_secret` — общий секрет движка (≥16 символов; при смене сначала

@@ -23,7 +23,7 @@ Flutter (dart:io HttpOverrides) → 127.0.0.1:7102 (HTTP-прокси движк
 
 ```
 Flutter → 127.0.0.1:7104 (HTTP-прокси движка)
-  → TLS:8443 (пин SPKI) → прод 57.129.126.169 (mimic-api-tcp.service)
+  → TLS:25565 (пин SPKI) → прод 57.129.126.169 (mimic-api-tcp.service)
   → nginx (vhost *.appvle.store) → backtg-mirror-api
 ```
 ```
@@ -49,7 +49,7 @@ Flutter → 127.0.0.1:7104 (HTTP-прокси движка)
 
 Unit `mimic-api.service` слушает **UDP 443** (`ss -ulnp | grep 443`),
 конфиг `/opt/mimic/server.yaml`, бинарь `/opt/mimic/mimic-server`.
-TCP-фолбек — unit `mimic-api-tcp.service`, **TCP 8443**,
+TCP-фолбек — unit `mimic-api-tcp.service`, TCP 25565,
 `/opt/mimic/mimic-server-tcp`, сертификат `/opt/mimic/tcp-*.pem`
 (самоподписанный, пин в Remote Config `mimic_tcp_pin`).
 Старое не отключено и не перезапущено: nginx, docker-контейнеры и прочие
@@ -68,7 +68,7 @@ TCP-фолбек — unit `mimic-api-tcp.service`, **TCP 8443**,
   network).
 - E2E MTP/UDP: mimic-клиент → UDP 443 → `GET https://api.appvle.store/`
   → ответ API за ~0.9 s.
-- E2E Mimic TCP: тот же запрос через TLS:8443 с пином → ответ API;
+- E2E Mimic TCP: тот же запрос через TLS:25565 с пином → ответ API;
   неверный пин и неверный секрет корректно отклоняются (проверено
   loopback-ом и с прод-сервером).
 - Осталось проверить на устройстве: сборка AAR в APK и подключение на
