@@ -8,7 +8,16 @@ import com.google.firebase.remoteconfig.ktx.remoteConfigSettings
 import com.witvpn.ikev2.BuildConfig
 import com.witvpn.ikev2.R
 import timber.log.Timber
+import com.google.android.gms.tasks.Tasks
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.security.SecureRandom
+import java.util.concurrent.TimeUnit
 
 /**
  * Централизованный источник «живых» доменов приложения.
@@ -80,12 +89,12 @@ object RemoteConfigManager {
 
     private val random = SecureRandom()
 
-    // Как часто разрешаем реально ходить в сеть за конфигом.
-    // В debug — сразу (0), в release — раз в 10 минут: смена домена/флагов
-    // доезжает до юзеров в пределах одного запуска. Firebase между интервалами
-    // отдаёт свой кэш, квота проекта с многократным запасом.
-    private val MIN_FETCH_INTERVAL_SECONDS: Long =
-        if (BuildConfig.DEBUG) 0L else 600L
+    // Лимитов на частоту fetch больше нет (0 = каждый fetch идёт в сеть):
+    // конфиг критичен, Firebase троттлит только по своей квоте проекта.
+    private const val MIN_FETCH_INTERVAL_SECONDS = 0L
+
+    private val refreshScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var refreshJob: Job? = null
 
     @Volatile
     private var firebaseAvailable = false
@@ -131,7 +140,30 @@ object RemoteConfigManager {
             // Firebase может быть недоступен (нет google-services.json и т.п.) —
             // тогда просто работаем на кэше/дефолтах, ничего не падает.
             firebaseAvailable = false
-            Timber.e(e, "RemoteConfig: init failed, using cached/default domains")
+                Timber.e(e, "RemoteConfig: init failed, using cached/default domains")
+        }
+    }
+
+    /**
+     * Периодический re-fetch конфига в живом процессе: VPN-процесс живёт
+     * днями, а до этого смена домена доезжала только после перезапуска
+     * приложения. Первая серия — с удвоением паузы (до 10 минут), дальше
+     * штатный цикл раз в 10 минут.
+     */
+    fun startPeriodicRefresh() {
+        if (refreshJob?.isActive == true) return
+        refreshJob = refreshScope.launch {
+            var delayMs = 30_000L
+            while (isActive) {
+                delay(delayMs)
+                val ok = runCatching {
+                    remoteConfig?.let { rc -> Tasks.await(rc.fetchAndActivate(), 20, TimeUnit.SECONDS) }
+                }.getOrElse {
+                    Timber.w(it, "RemoteConfig: periodic fetch failed")
+                    false
+                }
+                delayMs = if (ok == true) 600_000L else (delayMs * 2).coerceAtMost(600_000L)
+            }
         }
     }
 

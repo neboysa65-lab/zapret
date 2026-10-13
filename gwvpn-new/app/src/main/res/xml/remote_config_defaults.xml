@@ -18,11 +18,11 @@
          в консоли Firebase → Remote Config (api_base_url / payment_url). -->
     <entry>
         <key>encrypted_api_url</key>
-        <value>gwenc1:cLTW1Kd6hV58iJ6He4CbfKtm2IhqepasY5l2zXjGzXC1YL/UabSXu2KMvA==</value>
+        <value>gwenc1:smptfY6wacOdXop1z2vI0WWwb9nTsHqFtnPSoL1kxs1wtWC/1Gm0l7tijLw=</value>
     </entry>
     <entry>
         <key>encrypted_payment_url</key>
-        <value>gwenc1:06nW0pCrYNmKeXeJnbuMtr1hms1ncG++mqdeh158iJ6He4CbfKtm2IhqepasY5l2zXjGzXC1YL/UabSXu2KMvA==</value>
+        <value>gwenc1:oX2xfbVltnLXxLFlhF5ikq/FbYK+sqVlx46sa8OdXop1z2vI0WWwb9nTsHqFtnPSoL1kxs1wtWC/1Gm0l7tijLw=</value>
     </entry>
     <entry>
         <key>encrypted_subscription_url</key>

@@ -50,6 +50,10 @@ class MyApp : Application() {
 
             ConnectivityProvider.createProvider(this).subscribe()
 
+            // Периодический re-fetch конфига в живом процессе: без этого
+            // смена домена в консоли доезжала только после перезапуска.
+            RemoteConfigManager.startPeriodicRefresh()
+
             // GW-онлайн: сервис может восстановить туннель сам (START_STICKY)
             // без открытого UI — переподписываем heartbeat на месте.
             com.witvpn.gw.GwManager.onTunnelConnected = { config ->
