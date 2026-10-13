@@ -33,12 +33,22 @@ class RemoteConfigService {
   static const String kEncryptedPanelUrl = 'encrypted_panel_url';
   static const String kEncryptedSubUrl = 'encrypted_sub_url';
 
-  /// Жёсткий таймаут на весь fetchAndActivate. Если Firebase зависает
-  /// (провайдер рвёт соединение), не держим главный поток дольше этого
-  /// времени — иначе получаем ANR.
-  static const Duration _hardTimeout = Duration(seconds: 5);
+  /// Таймаут на один fetchAndActivate (защита от зависания, когда
+  /// провайдер рвёт соединение — без него получаем ANR).
+  static const Duration _hardTimeout = Duration(seconds: 20);
+
+  /// Штатный период фонового re-fetch в живом процессе: смена домена
+  /// доезжает без перезапуска приложения.
+  static const Duration _steadyRefreshInterval = Duration(minutes: 10);
+
+  /// Попыток первой серии (интервал удваивается: 3с, 6с, 12с, 24с, 48с).
+  static const int _maxBootRetries = 5;
 
   FirebaseRemoteConfig? _rc;
+  Timer? _steadyTimer;
+
+  /// Завершается при первом успешно применённом конфиге (baseUrl не пуст).
+  final Completer<void> _firstApplied = Completer<void>();
 
   /// Инициализация при старте приложения. Никогда не бросает исключение
   /// наружу — падение Remote Config не должно ронять запуск приложения.
@@ -57,28 +67,15 @@ class RemoteConfigService {
       });
 
       await rc.setConfigSettings(RemoteConfigSettings(
-        // Сколько ждём ответ от Firebase, прежде чем взять дефолты.
-        fetchTimeout: const Duration(seconds: 10),
-        // Как часто разрешаем реально ходить в сеть за новыми значениями.
-        // 10 минут — быстро реагируем на смену домена, но не спамим.
-        // Для отладки можно поставить Duration.zero.
-        minimumFetchInterval: const Duration(minutes: 10),
+        fetchTimeout: const Duration(seconds: 30),
+        // Лимитов на частоту fetch больше нет: конфиг критичен (без него
+        // нет baseUrl), Firebase троттлит только по своей квоте проекта.
+        minimumFetchInterval: Duration.zero,
       ));
 
-      // Скачиваем + активируем свежие значения с жёстким таймаутом.
-      // Firebase.fetchAndActivate() иногда зависает, когда провайдер
-      // рвёт соединение (Connection closed by peer) — без этого
-      // обёртки приложение может зависнуть и получить ANR.
-      await rc.fetchAndActivate().timeout(_hardTimeout, onTimeout: () {
-        if (kDebugMode) {
-          debugPrint('RemoteConfigService: fetchAndActivate timed out '
-              'after $_hardTimeout');
-        }
-        return false;
-      });
-
-      // Переносим в ApiConfig, чтобы весь код читал уже актуальные домены.
-      _applyToApiConfig(rc);
+      // Первая серия fetch'ей с повторами — в фоне; после успеха конфиг
+      // продолжит обновляться штатным steady-циклом.
+      unawaited(_fetchLoop());
     } catch (e, s) {
       // Нет сети / Firebase недоступен — работаем на дефолтах ApiConfig.
       if (kDebugMode) {
@@ -106,6 +103,58 @@ class RemoteConfigService {
     }
   }
 
+  /// Один fetchAndActivate + применение. Возвращает true, если после
+  /// попытки baseUrl известен (конфиг пришёл или был в кэше).
+  Future<bool> _fetchOnce() async {
+    final rc = _rc;
+    if (rc == null) return false;
+    try {
+      await rc.fetchAndActivate().timeout(
+        _hardTimeout,
+        onTimeout: () => false,
+      );
+      _applyToApiConfig(rc);
+      return ApiConfig.baseUrl.isNotEmpty;
+    } catch (e) {
+      if (kDebugMode) debugPrint('RemoteConfigService: fetch failed: $e');
+      return false;
+    }
+  }
+
+  /// Стартовая серия попыток + фоновый re-fetch на всю жизнь процесса.
+  /// Раньше конфиг читался только при старте: юзер с приложением в памяти
+  /// никогда не получал новый домен из консоли.
+  Future<void> _fetchLoop() async {
+    var delay = const Duration(seconds: 3);
+    for (var attempt = 0; attempt < _maxBootRetries; attempt++) {
+      if (ApiConfig.baseUrl.isNotEmpty) break;
+      final ok = await _fetchOnce();
+      if (ok) break;
+      if (attempt < _maxBootRetries - 1) {
+        await Future.delayed(delay);
+        delay *= 2;
+      }
+    }
+    _steadyTimer ??= Timer.periodic(
+      _steadyRefreshInterval,
+      (_) => unawaited(refresh()),
+    );
+  }
+
+  /// Ждёт первый успешно применённый конфиг (не дольше [timeout]).
+  /// Для действий, которым нужен baseUrl прямо сейчас (регистрация, логин):
+  /// без ожидания запрос на чистой установке уходил на пустой URL —
+  /// отсюда красная «Ошибка подключения» при живом интернете.
+  Future<bool> ensureReady({Duration timeout = const Duration(seconds: 20)}) async {
+    if (ApiConfig.baseUrl.isNotEmpty) return true;
+    try {
+      await _firstApplied.future.timeout(timeout);
+      return true;
+    } on TimeoutException {
+      return false;
+    }
+  }
+
   void _applyToApiConfig(FirebaseRemoteConfig rc) {
     // Только значение, реально пришедшее из Remote Config (source ==
     // valueRemote). Если Firebase не ответил, rc отдаёт дефолт из
@@ -128,6 +177,10 @@ class RemoteConfigService {
     }
     if (sub != null && _looksValid(sub)) {
       ApiConfig.subBaseUrl = _clean(sub);
+    }
+
+    if (ApiConfig.baseUrl.isNotEmpty && !_firstApplied.isCompleted) {
+      _firstApplied.complete();
     }
 
     if (kDebugMode) {

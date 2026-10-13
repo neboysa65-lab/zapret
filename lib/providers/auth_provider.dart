@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import '../models/user_model.dart';
+import '../services/remote_config_service.dart';
 import '../services/auth_service.dart';
 import '../services/user_api_service.dart';
 
@@ -39,6 +40,9 @@ class AuthProvider extends ChangeNotifier {
   Future<void> register() async {
     _error = null;
     notifyListeners();
+    // Конфиг (baseUrl) приезжает асинхронно: на чистой установке запрос без
+    // ожидания уходил на пустой URL — отсюда красная «Ошибка подключения».
+    await RemoteConfigService.instance.ensureReady();
     try {
       final result = await UserApiService.register();
       final phrase = result['seed_phrase']!;
@@ -57,6 +61,7 @@ class AuthProvider extends ChangeNotifier {
   /// Вход по seed-фразе
   Future<bool> loginWithSeedPhrase(String phrase) async {
     _error = null;
+    await RemoteConfigService.instance.ensureReady();
     try {
       final seedHash = AuthService.computeSeedHash(phrase);
       final api = UserApiService(seedHash);
