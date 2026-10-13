@@ -391,25 +391,32 @@ class AppProvider with ChangeNotifier {
     });
   }
 
-  /// Disconnect from current server and reconnect to selected one
+  /// Disconnect from current server and reconnect to the selected one.
+  ///
+  /// Раньше неудачный stop ставил error и бросал юзера: приходилось жать
+  /// «Подключить» заново — а это повторный показ рекламы. Теперь смена
+  /// сервера гарантированно доезжает до reconnect'а: сбой stop не отменяет
+  /// его, а неудачный старт стартует один автоповтор.
   Future<void> _reconnect() async {
     final generation = ++_connectGeneration;
     _preparingConnection = true;
     _vpnStatus = VpnStatus.connecting;
     notifyListeners();
     final stopped = await _vpnService.disconnect();
-    // Small delay to ensure clean disconnect
     await Future.delayed(const Duration(milliseconds: 500));
     if (_disposed || generation != _connectGeneration) return;
     _preparingConnection = false;
-    if (!stopped) {
-      _vpnStatus = VpnStatus.error;
-      _errorMessage = _vpnService.errorMessage;
-      notifyListeners();
-      return;
-    }
     _vpnStatus = VpnStatus.disconnected;
     await connectVpn();
+    // Один автоповтор: частая причина неудачи — foreground service не успел
+    // умереть до старта нового (connect сам ретраит старт, но не всю сессию).
+    if (!_disposed &&
+        generation == _connectGeneration &&
+        _vpnStatus == VpnStatus.disconnected) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      if (_disposed || generation != _connectGeneration) return;
+      await connectVpn();
+    }
   }
 
   /// Connect to VPN
