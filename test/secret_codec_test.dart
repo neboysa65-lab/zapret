@@ -55,6 +55,11 @@ void main() {
       expect(ApiConfig.defaultBaseUrlEncrypted, isNotEmpty);
       expect(SecretCodec.isEncoded(ApiConfig.defaultBaseUrlEncrypted), isTrue);
       expect(ApiConfig.defaultBaseUrl, 'https://media-net.gwapp.store');
+      expect(
+        SecretCodec.isEncoded(ApiConfig.nonRuFallbackBaseUrlEncrypted),
+        isTrue,
+      );
+      expect(ApiConfig.nonRuFallbackBaseUrl, 'https://45.95.96.203');
       expect(ApiConfig.baseUrl, 'https://media-net.gwapp.store');
       expect(ApiConfig.panelBaseUrl, 'https://panel.gw-vpn.click');
       expect(ApiConfig.subBaseUrl, isEmpty);

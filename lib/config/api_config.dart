@@ -17,6 +17,13 @@ class ApiConfig {
   /// без API. Remote Config перекрывает дефолт всегда, когда отвечает.
   static const String defaultBaseUrlEncrypted =
       'gwenc1:0WWwb9nTsHqFtnPSoL1kxs1wtWC/1Gm0l7tijLw=';
+
+  /// Запасной не-RU API-адрес (https://45.95.96.203, формат gwenc1):
+  /// используется только для автоматического failover в [ApiHostService],
+  /// если основной адрес недоступен или сработал гео-флип при активном VPN.
+  static const String nonRuFallbackBaseUrlEncrypted =
+      'gwenc1:ep7GdpCtx4Ggb7CY1Gm0l7tijLw=';
+
   static const String panelBaseUrlEncrypted =
       'gwenc1:asmOrGvEnV6Kd89rx9p8r2Tc1Gm0l7tijLw=';
 
@@ -25,6 +32,10 @@ class ApiConfig {
 
   /// Расшифрованный дефолт основного API-домена (fallback Remote Config'а).
   static String get defaultBaseUrl => SecretCodec.decode(defaultBaseUrlEncrypted);
+
+  /// Расшифрованный не-RU адрес для двухстороннего failover (RU <-> не-RU).
+  static String get nonRuFallbackBaseUrl =>
+      SecretCodec.decode(nonRuFallbackBaseUrlEncrypted);
 
   /// Текущий основной API-домен (регистрация, тарифы, конфиги, оплата).
   /// Remote Config key: `encrypted_api_url` — закодированный gwenc1 URL или

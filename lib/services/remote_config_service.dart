@@ -44,8 +44,16 @@ class RemoteConfigService {
   /// Попыток первой серии (интервал удваивается: 3с, 6с, 12с, 24с, 48с).
   static const int _maxBootRetries = 5;
 
+  /// Безопасный интервал для продакшна (5 минут): при Duration.zero на
+  /// тысячах устройств проект упирается в часовую серверную квоту Firebase.
+  /// Мгновенная доставка изменений из консоли обеспечивается подпиской
+  /// onConfigUpdated ниже (обходит minimumFetchInterval официально).
+  static const Duration _minFetchInterval =
+      kDebugMode ? Duration.zero : Duration(minutes: 5);
+
   FirebaseRemoteConfig? _rc;
   Timer? _steadyTimer;
+  StreamSubscription<RemoteConfigUpdate>? _realtimeSub;
 
   /// Завершается при первом успешно применённом конфиге (baseUrl не пуст).
   final Completer<void> _firstApplied = Completer<void>();
@@ -68,10 +76,29 @@ class RemoteConfigService {
 
       await rc.setConfigSettings(RemoteConfigSettings(
         fetchTimeout: const Duration(seconds: 30),
-        // Лимитов на частоту fetch больше нет: конфиг критичен (без него
-        // нет baseUrl), Firebase троттлит только по своей квоте проекта.
-        minimumFetchInterval: Duration.zero,
+        minimumFetchInterval: _minFetchInterval,
       ));
+
+      // Real-time обновления Remote Config: как только в консоли публикуется
+      // новое значение, SDK получает событие и активирует его мгновенно.
+      _realtimeSub?.cancel();
+      _realtimeSub = rc.onConfigUpdated.listen(
+        (_) async {
+          try {
+            await rc.activate();
+            _applyToApiConfig(rc);
+          } catch (e) {
+            if (kDebugMode) {
+              debugPrint('RemoteConfigService: real-time activate failed: $e');
+            }
+          }
+        },
+        onError: (Object e) {
+          if (kDebugMode) {
+            debugPrint('RemoteConfigService: real-time stream error: $e');
+          }
+        },
+      );
 
       // Первая серия fetch'ей с повторами — в фоне; после успеха конфиг
       // продолжит обновляться штатным steady-циклом.

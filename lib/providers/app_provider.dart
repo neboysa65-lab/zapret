@@ -402,7 +402,7 @@ class AppProvider with ChangeNotifier {
     _preparingConnection = true;
     _vpnStatus = VpnStatus.connecting;
     notifyListeners();
-    final stopped = await _vpnService.disconnect();
+    await _vpnService.disconnect();
     await Future.delayed(const Duration(milliseconds: 500));
     if (_disposed || generation != _connectGeneration) return;
     _preparingConnection = false;

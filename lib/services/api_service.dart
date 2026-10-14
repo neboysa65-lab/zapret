@@ -89,7 +89,7 @@ class ApiService {
       final response = await ApiHostService.instance.withFailover(
         (base) => _client
             .get(
-              Uri.parse('$base/api/v1/configs/'),
+              Uri.parse('$base/api/v1/configs'),
               headers: {'X-Seed-Hash': seedHash},
             )
             .timeout(const Duration(seconds: 15)),

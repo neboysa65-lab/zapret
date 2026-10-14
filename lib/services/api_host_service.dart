@@ -149,10 +149,31 @@ class ApiHostService {
       error is http.ClientException;
 
   /// Меняет метку на свежую. false — если шаблон не задан (обычный URL):
-  /// менять нечего.
+  /// тогда пробуем резервный бэкенд (RU media-net <-> не-RU 45.95.96.203),
+  /// чтобы при блокировке или гео-флипе после VPN запрос прошёл без ошибки.
   bool _switchLabel(String failedBase) {
     final template = _template;
-    if (template == null) return false;
+    if (template == null) {
+      if (ApiConfig.baseUrl != failedBase) return true;
+      final ruCanonical = _parse(ApiConfig.defaultBaseUrl)?.canonical;
+      final nonRuCanonical = _parse(ApiConfig.nonRuFallbackBaseUrl)?.canonical;
+      if (ruCanonical == null ||
+          nonRuCanonical == null ||
+          ruCanonical == nonRuCanonical) {
+        return false;
+      }
+      if (failedBase == ruCanonical) {
+        ApiConfig.baseUrl = nonRuCanonical;
+        _log('failover RU → non-RU: ${ApiConfig.baseUrl}');
+        return true;
+      }
+      if (failedBase == nonRuCanonical) {
+        ApiConfig.baseUrl = ruCanonical;
+        _log('failover non-RU → RU: ${ApiConfig.baseUrl}');
+        return true;
+      }
+      return false;
+    }
     // Пока падал запрос, метку мог сменить другой запрос.
     if (ApiConfig.baseUrl != failedBase) return true;
     final label = _label = _newLabel();

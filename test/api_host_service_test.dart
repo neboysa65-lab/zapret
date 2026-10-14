@@ -281,6 +281,29 @@ void main() {
       expect(ApiConfig.baseUrl, 'https://plain.example.com');
     });
 
+    test('paired RU and non-RU hosts fail over to each other on transport error',
+        () async {
+      // Сценарий гео-флипа: при подключённом VPN Firebase вернул не-RU IP
+      // (45.95.96.203), затем VPN выключили в РФ -> 45 недоступен ->
+      // автоматический failover переключает обратно на RU (media-net).
+      host.apply(ApiConfig.nonRuFallbackBaseUrl);
+      expect(ApiConfig.baseUrl, 'https://45.95.96.203');
+
+      final response = await host.withFailover(
+        failingOn('45.95.96.203'),
+      );
+      expect(response.statusCode, 200);
+      expect(ApiConfig.baseUrl, 'https://media-net.gwapp.store');
+
+      // И в обратную сторону: если в не-RU сети media-net недоступен ->
+      // переключается на 45.95.96.203.
+      final response2 = await host.withFailover(
+        failingOn('media-net.gwapp.store'),
+      );
+      expect(response2.statusCode, 200);
+      expect(ApiConfig.baseUrl, 'https://45.95.96.203');
+    });
+
     test('application errors never switch the label', () async {
       final before = ApiConfig.baseUrl;
       await expectLater(
