@@ -66,7 +66,9 @@ object RemoteSourceModule {
             .addInterceptor(
                 DynamicBaseUrlInterceptor(
                     currentBaseUrlProvider = { RemoteConfigManager.getApiBaseUrl(context) },
-                    rotateBaseUrl = { RemoteConfigManager.rotateWildcardAndReturnApiBaseUrl(context) }
+                    rotateBaseUrl = { failedHost ->
+                        RemoteConfigManager.rotateOrFallbackApiBaseUrl(context, failedHost)
+                    }
                 )
             )
             .addInterceptor(modifyRequestInterceptor)

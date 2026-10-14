@@ -36,7 +36,7 @@ import java.io.IOException
  */
 class DynamicBaseUrlInterceptor(
     private val currentBaseUrlProvider: () -> String,
-    private val rotateBaseUrl: () -> String? = { null }
+    private val rotateBaseUrl: (failedHost: String) -> String? = { null }
 ) : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -50,7 +50,7 @@ class DynamicBaseUrlInterceptor(
                 return chain.proceed(redirected(request, configured))
             } catch (e: IOException) {
                 attempt++
-                val next = if (attempt < MAX_ROTATION_ATTEMPTS) rotateBaseUrl() else null
+                val next = if (attempt < MAX_ROTATION_ATTEMPTS) rotateBaseUrl(configured.host) else null
                 val nextUrl = next?.toHttpUrlOrNull()
                 if (nextUrl == null || isSameEndpoint(nextUrl, configured)) {
                     // Ротации нет или она не меняет хост — отдаём исходную ошибку.

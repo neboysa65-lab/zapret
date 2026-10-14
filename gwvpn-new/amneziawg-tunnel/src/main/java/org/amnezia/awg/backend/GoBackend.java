@@ -382,6 +382,17 @@ public final class GoBackend implements Backend {
             final VpnService.Builder builder = service.getBuilder();
             builder.setSession(sessionName);
 
+            // Всегда исключаем собственное приложение из AWG-туннеля (если не
+            // задан белый список IncludedApplications): иначе запросы к
+            // Firebase Remote Config и API идут через зарубежную ноду, и
+            // гео-условие RU в Firebase сбрасывается на не-RU IP.
+            if (config.getInterface().getIncludedApplications().isEmpty()) {
+                try {
+                    builder.addDisallowedApplication(service.getPackageName());
+                } catch (final Exception ignored) {
+                }
+            }
+
             for (final String excludedApplication : config.getInterface().getExcludedApplications())
                 builder.addDisallowedApplication(excludedApplication);
 

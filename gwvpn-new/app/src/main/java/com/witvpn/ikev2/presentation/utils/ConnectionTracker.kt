@@ -1,11 +1,15 @@
 package com.witvpn.ikev2.presentation.utils
 
 import android.content.Context
+import com.witvpn.ikev2.presentation.utils.interceptor.DynamicBaseUrlInterceptor
+import com.witvpn.ikev2.presentation.utils.interceptor.ModifyRequestInterceptor
+import com.witvpn.ikev2.presentation.utils.interceptor.UnsafeOkHttpClient
 import kotlinx.coroutines.*
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
+import java.util.concurrent.TimeUnit
 
 /**
  * Репортинг подключений в API (connect / heartbeat / disconnect).
@@ -15,9 +19,32 @@ import timber.log.Timber
  * сам, опрашивая каждый IKEv2-сервер напрямую (node_exporter, ipsec_clients).
  */
 object ConnectionTracker {
-    private val client = OkHttpClient.Builder()
-        .addInterceptor(com.witvpn.ikev2.presentation.utils.interceptor.ModifyRequestInterceptor())
-        .build()
+    @Volatile
+    private var client: OkHttpClient? = null
+
+    private fun getClient(context: Context): OkHttpClient {
+        client?.let { return it }
+        synchronized(this) {
+            client?.let { return it }
+            val appContext = context.applicationContext
+            return UnsafeOkHttpClient.getUnsafeOkHttpClientBuilder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .writeTimeout(15, TimeUnit.SECONDS)
+                .addInterceptor(
+                    DynamicBaseUrlInterceptor(
+                        currentBaseUrlProvider = { RemoteConfigManager.getApiBaseUrl(appContext) },
+                        rotateBaseUrl = { failedHost ->
+                            RemoteConfigManager.rotateOrFallbackApiBaseUrl(appContext, failedHost)
+                        }
+                    )
+                )
+                .addInterceptor(ModifyRequestInterceptor())
+                .build()
+                .also { client = it }
+        }
+    }
+
     private var heartbeatJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -45,7 +72,7 @@ object ConnectionTracker {
                     .url("${getBaseUrl(appContext)}/user/connection/update")
                     .post(body)
                     .build()
-                client.newCall(request).execute().close()
+                getClient(appContext).newCall(request).execute().close()
                 Timber.d("ConnectionTracker: connect reported for $serverIp")
             } catch (e: Exception) {
                 Timber.e(e, "ConnectionTracker: failed to report connect")
@@ -69,7 +96,7 @@ object ConnectionTracker {
                     .url("${getBaseUrl(appContext)}/user/connection/update")
                     .post(body)
                     .build()
-                client.newCall(request).execute().close()
+                getClient(appContext).newCall(request).execute().close()
                 Timber.d("ConnectionTracker: disconnect reported")
             } catch (e: Exception) {
                 Timber.e(e, "ConnectionTracker: failed to report disconnect")
@@ -96,7 +123,7 @@ object ConnectionTracker {
                         .url("${getBaseUrl(context)}/user/connection/update")
                         .post(body)
                         .build()
-                    client.newCall(request).execute().close()
+                    getClient(context).newCall(request).execute().close()
                     Timber.d("ConnectionTracker: heartbeat sent")
                 } catch (e: Exception) {
                     Timber.e(e, "ConnectionTracker: heartbeat failed")

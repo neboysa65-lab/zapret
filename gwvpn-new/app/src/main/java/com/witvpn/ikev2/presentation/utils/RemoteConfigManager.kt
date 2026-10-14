@@ -76,6 +76,14 @@ object RemoteConfigManager {
     const val KEY_HEARTBEAT_ENABLED = "heartbeat_enabled"
     const val KEY_HEARTBEAT_INTERVAL_SECONDS = "heartbeat_interval_seconds"
 
+    // Оба активных бэкенд-URL (RU = media-net, не-RU = 45.95.96.203) в gwenc1:
+    // используются как автоматический failover, если основной домен из Remote
+    // Config/кэша временно недоступен или сработал гео-флип при активном VPN.
+    private const val FALLBACK_RU_API_URL_ENC =
+        "gwenc1:smptfY6wacOdXop1z2vI0WWwb9nTsHqFtnPSoL1kxs1wtWC/1Gm0l7tijLw="
+    private const val FALLBACK_NON_RU_API_URL_ENC =
+        "gwenc1:u8eeh12RzbKvc9bUsWfDep7GdpCtx4Ggb7CY1Gm0l7tijLw="
+
     private const val MIN_HEARTBEAT_SECONDS = 15L
     private const val MAX_HEARTBEAT_SECONDS = 240L
     private const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60L
@@ -89,9 +97,13 @@ object RemoteConfigManager {
 
     private val random = SecureRandom()
 
-    // Лимитов на частоту fetch больше нет (0 = каждый fetch идёт в сеть):
-    // конфиг критичен, Firebase троттлит только по своей квоте проекта.
-    private const val MIN_FETCH_INTERVAL_SECONDS = 0L
+    // Безопасный интервал для продакшна (5 минут): при 0L на десятках тысяч
+    // устройств проект упирается в часовую серверную квоту Firebase
+    // (FirebaseRemoteConfigFetchThrottledException). Мгновенная доставка
+    // изменений из консоли обеспечивается real-time listener'ом ниже
+    // (addOnConfigUpdateListener обходит minimumFetchInterval официально).
+    private val MIN_FETCH_INTERVAL_SECONDS: Long =
+        if (BuildConfig.DEBUG) 0L else 300L
 
     private val refreshScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var refreshJob: Job? = null
@@ -104,12 +116,19 @@ object RemoteConfigManager {
     @Volatile
     private var cachedWildcardLabel: String? = null
 
+    // Если основной URL упал по сети и сработал failover на альтернативный
+    // бэкенд (RU <-> не-RU), держим рабочий URL в памяти до следующего
+    // успешного обновления Remote Config.
+    @Volatile
+    private var activeFailoverApiUrl: String? = null
+
     /**
      * Инициализация + первичная загрузка конфига. Вызывать один раз из
      * Application.onCreate(). Метод неблокирующий: сеть подтягивается в фоне,
      * а до её завершения работают закэшированные значения / дефолты.
      */
     fun init(context: Context) {
+        val appContext = context.applicationContext
         try {
             val rc = Firebase.remoteConfig
             rc.setConfigSettingsAsync(
@@ -127,20 +146,38 @@ object RemoteConfigManager {
                 .addOnCompleteListener { task ->
                     if (task.isSuccessful) {
                         Timber.d("RemoteConfig: fetch/activate ok (updated=${task.result})")
-                        // Кэшируем актуальные значения, чтобы они были доступны
-                        // синхронно уже на следующем холодном старте.
-                        persist(context, KEY_ENCRYPTED_API_URL, rc.getString(KEY_ENCRYPTED_API_URL))
-                        persist(context, KEY_ENCRYPTED_PAYMENT_URL, rc.getString(KEY_ENCRYPTED_PAYMENT_URL))
-                        persist(context, KEY_ENCRYPTED_SUBSCRIPTION_URL, rc.getString(KEY_ENCRYPTED_SUBSCRIPTION_URL))
+                        persistRemoteUrls(appContext, rc)
                     } else {
                         Timber.w(task.exception, "RemoteConfig: fetch/activate failed")
                     }
                 }
+
+            // Real-time обновления Remote Config: как только в консоли
+            // публикуется новое значение, SDK получает пуш и активирует его
+            // мгновенно, обходя minimumFetchInterval без риска троттлинга.
+            runCatching {
+                rc.addOnConfigUpdateListener(
+                    object : com.google.firebase.remoteconfig.ConfigUpdateListener {
+                        override fun onUpdate(configUpdate: com.google.firebase.remoteconfig.ConfigUpdate) {
+                            rc.activate().addOnCompleteListener { task ->
+                                if (task.isSuccessful) {
+                                    activeFailoverApiUrl = null
+                                    persistRemoteUrls(appContext, rc)
+                                }
+                            }
+                        }
+
+                        override fun onError(error: com.google.firebase.remoteconfig.FirebaseRemoteConfigException) {
+                            Timber.w(error, "RemoteConfig: real-time update error")
+                        }
+                    }
+                )
+            }
         } catch (e: Throwable) {
             // Firebase может быть недоступен (нет google-services.json и т.п.) —
             // тогда просто работаем на кэше/дефолтах, ничего не падает.
             firebaseAvailable = false
-                Timber.e(e, "RemoteConfig: init failed, using cached/default domains")
+            Timber.e(e, "RemoteConfig: init failed, using cached/default domains")
         }
     }
 
@@ -161,9 +198,7 @@ object RemoteConfigManager {
                     val rc = remoteConfig
                     if (rc != null) {
                         Tasks.await(rc.fetchAndActivate(), 20, TimeUnit.SECONDS)
-                        persist(appContext, KEY_ENCRYPTED_API_URL, rc.getString(KEY_ENCRYPTED_API_URL))
-                        persist(appContext, KEY_ENCRYPTED_PAYMENT_URL, rc.getString(KEY_ENCRYPTED_PAYMENT_URL))
-                        persist(appContext, KEY_ENCRYPTED_SUBSCRIPTION_URL, rc.getString(KEY_ENCRYPTED_SUBSCRIPTION_URL))
+                        persistRemoteUrls(appContext, rc)
                         true
                     } else false
                 } catch (it: Throwable) {
@@ -179,13 +214,54 @@ object RemoteConfigManager {
      * Базовый URL API. Всегда заканчивается на "/" — этого требует Retrofit.
      */
     fun getApiBaseUrl(context: Context): String {
+        activeFailoverApiUrl?.let { return normalizeTrailingSlash(it) }
+        return getPrimaryApiBaseUrl(context)
+    }
+
+    private fun getPrimaryApiBaseUrl(context: Context): String {
         val raw = resolveUrl(
             context,
             encryptedKey = KEY_ENCRYPTED_API_URL,
             resourceDefault = context.getString(R.string.base_url)
         )
         val expanded = expandWildcardTemplate(raw, context)
-        return if (expanded.endsWith("/")) expanded else "$expanded/"
+        return normalizeTrailingSlash(expanded)
+    }
+
+    private fun normalizeTrailingSlash(url: String): String =
+        if (url.endsWith("/")) url else "$url/"
+
+    /**
+     * Ротация/failover при сетевой ошибке:
+     * 1) если в конфиге wildcard-маска (*.api...) — генерируем новый субдомен;
+     * 2) если обычный URL (например, RU media-net или не-RU 45.95.96.203) и
+     *    текущий хост недоступен (блокировка или гео-флип после VPN) —
+     *    переключаемся на альтернативный бэкенд, чтобы запрос прошёл без ошибки.
+     */
+    fun rotateOrFallbackApiBaseUrl(context: Context, failedHost: String? = null): String? {
+        val raw = resolveUrl(
+            context,
+            encryptedKey = KEY_ENCRYPTED_API_URL,
+            resourceDefault = context.getString(R.string.base_url)
+        )
+        if (isWildcardTemplate(raw)) {
+            val newLabel = generateAndPersistLabel(context)
+            Timber.d("RemoteConfig: rotated wildcard subdomain -> %s", newLabel)
+            activeFailoverApiUrl = null
+            return getPrimaryApiBaseUrl(context)
+        }
+        val primary = getPrimaryApiBaseUrl(context)
+        val ruFallback = normalizeTrailingSlash(SecretCodec.decode(FALLBACK_RU_API_URL_ENC))
+        val nonRuFallback = normalizeTrailingSlash(SecretCodec.decode(FALLBACK_NON_RU_API_URL_ENC))
+        val candidates = listOf(primary, ruFallback, nonRuFallback).distinct()
+        val currentHost = failedHost ?: wildcardHost(getApiBaseUrl(context))
+        val next = candidates.firstOrNull { candidate ->
+            val host = wildcardHost(candidate)
+            host.isNotEmpty() && !host.equals(currentHost, ignoreCase = true)
+        } ?: return null
+        activeFailoverApiUrl = next
+        Timber.d("RemoteConfig: failover API base url -> %s", wildcardHost(next))
+        return next
     }
 
     /**
@@ -248,15 +324,7 @@ object RemoteConfigManager {
      * Вернёт null, если в конфиге нет маски — тогда ротировать нечего.
      */
     fun rotateWildcardAndReturnApiBaseUrl(context: Context): String? {
-        val raw = resolveUrl(
-            context,
-            encryptedKey = KEY_ENCRYPTED_API_URL,
-            resourceDefault = context.getString(R.string.base_url)
-        )
-        if (!isWildcardTemplate(raw)) return null
-        val newLabel = generateAndPersistLabel(context)
-        Timber.d("RemoteConfig: rotated wildcard subdomain -> %s", newLabel)
-        return getApiBaseUrl(context)
+        return rotateOrFallbackApiBaseUrl(context)
     }
 
     // --- внутреннее ---
@@ -316,6 +384,27 @@ object RemoteConfigManager {
      */
     private fun isValidDecoded(raw: String, decoded: String): Boolean =
         !SecretCodec.isEncoded(raw) || decoded.contains("://")
+
+    /**
+     * Сохраняем в SharedPreferences ТОЛЬКО значения, реально пришедшие с
+     * сервера Firebase (VALUE_SOURCE_REMOTE), чтобы дефолты из XML никогда
+     * не затирали живой домен, полученный на прошлом запуске.
+     */
+    private fun persistRemoteUrls(context: Context, rc: FirebaseRemoteConfig) {
+        for (key in listOf(KEY_ENCRYPTED_API_URL, KEY_ENCRYPTED_PAYMENT_URL, KEY_ENCRYPTED_SUBSCRIPTION_URL)) {
+            val value = rc.getValue(key)
+            if (value.source == FirebaseRemoteConfig.VALUE_SOURCE_REMOTE) {
+                val raw = value.asString()
+                val decoded = SecretCodec.decode(raw)
+                if (raw.isNotBlank() && isValidDecoded(raw, decoded)) {
+                    persist(context, key, raw)
+                    if (key == KEY_ENCRYPTED_API_URL) {
+                        activeFailoverApiUrl = null
+                    }
+                }
+            }
+        }
+    }
 
     private fun persist(context: Context, key: String, value: String) {
         if (value.isBlank()) return
