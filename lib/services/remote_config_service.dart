@@ -103,8 +103,8 @@ class RemoteConfigService {
     }
   }
 
-  /// Один fetchAndActivate + применение. Возвращает true, если после
-  /// попытки baseUrl известен (конфиг пришёл или был в кэше).
+  /// Один fetchAndActivate + применение. Возвращает true, если конфиг
+  /// реально пришёл с сервера (source == valueRemote).
   Future<bool> _fetchOnce() async {
     final rc = _rc;
     if (rc == null) return false;
@@ -114,7 +114,7 @@ class RemoteConfigService {
         onTimeout: () => false,
       );
       _applyToApiConfig(rc);
-      return ApiConfig.baseUrl.isNotEmpty;
+      return rc.getValue(kEncryptedApiUrl).source == ValueSource.valueRemote;
     } catch (e) {
       if (kDebugMode) debugPrint('RemoteConfigService: fetch failed: $e');
       return false;
@@ -127,7 +127,6 @@ class RemoteConfigService {
   Future<void> _fetchLoop() async {
     var delay = const Duration(seconds: 3);
     for (var attempt = 0; attempt < _maxBootRetries; attempt++) {
-      if (ApiConfig.baseUrl.isNotEmpty) break;
       final ok = await _fetchOnce();
       if (ok) break;
       if (attempt < _maxBootRetries - 1) {

@@ -11,8 +11,8 @@
 
 | Ключ в Remote Config | Что это | Значение по умолчанию |
 |----------------------|---------|-----------------------|
-| `encrypted_api_url`   | Основной API: регистрация, тарифы, конфиги, оплата. Закодированный (gwenc1) URL **или wildcard-шаблон** `*.api.example.com` (см. ниже). Открытые `api_base_url`/`panel_base_url`/`sub_base_url` новые версии НЕ читают | НЕТ: домены в билд не зашиты, до первого fetch их нет |
-| `encrypted_panel_url` | Панель управления: метрики нод, статистика трафика (gwenc1) | НЕТ (опционально) |
+| `encrypted_api_url`   | Основной API: регистрация, тарифы, конфиги, оплата. Закодированный (gwenc1) URL **или wildcard-шаблон** `*.api.example.com` (см. ниже). Открытые `api_base_url`/`panel_base_url`/`sub_base_url` новые версии НЕ читают | зашит media-net (`ApiConfig.defaultBaseUrlEncrypted`) |
+| `encrypted_panel_url` | Панель управления: метрики нод, статистика трафика (gwenc1) | зашит `panel.gw-vpn.click` |
 | `encrypted_sub_url`   | Домен раздачи подписок (задел на будущее, gwenc1)  | НЕТ (опционально) |
 
 Значения по умолчанию лежат в `lib/config/api_config.dart` — они срабатывают
