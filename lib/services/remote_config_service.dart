@@ -4,6 +4,8 @@ import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
 
 import '../config/api_config.dart';
+import '../config/secret_codec.dart';
+import 'api_host_service.dart';
 
 /// Сервис динамического обновления доменов через Firebase Remote Config.
 ///
@@ -13,25 +15,48 @@ import '../config/api_config.dart';
 ///   2. Скачиваем актуальные значения из Firebase и активируем их.
 ///   3. Переносим значения в [ApiConfig], откуда их читает весь остальной код.
 ///
-/// Ключи в консоли Firebase Remote Config:
-///   - `api_base_url`   → [ApiConfig.baseUrl]
-///   - `panel_base_url` → [ApiConfig.panelBaseUrl]
-///   - `sub_base_url`   → [ApiConfig.subBaseUrl]
+/// Ключи в консоли Firebase Remote Config (значения в формате gwenc1,
+/// см. [SecretCodec]; открытые api_base_url/panel_base_url/sub_base_url
+/// из старых версий консоли намеренно НЕ читаются — в JSON Remote Config
+/// не должно быть открытых URL для новых версий):
+///   - `encrypted_api_url`   → [ApiConfig.baseUrl] через [ApiHostService]:
+///     закодированный URL или wildcard-шаблон `*.api.example.com`
+///     (рандомный поддомен на устройство с авто-ротацией при блокировке)
+///   - `encrypted_panel_url` → [ApiConfig.panelBaseUrl]
+///   - `encrypted_sub_url`   → [ApiConfig.subBaseUrl]
 class RemoteConfigService {
   RemoteConfigService._();
   static final RemoteConfigService instance = RemoteConfigService._();
 
   // Названия ключей — держим в одном месте, чтобы не опечататься.
-  static const String kApiBaseUrl = 'api_base_url';
-  static const String kPanelBaseUrl = 'panel_base_url';
-  static const String kSubBaseUrl = 'sub_base_url';
+  static const String kEncryptedApiUrl = 'encrypted_api_url';
+  static const String kEncryptedPanelUrl = 'encrypted_panel_url';
+  static const String kEncryptedSubUrl = 'encrypted_sub_url';
 
-  /// Жёсткий таймаут на весь fetchAndActivate. Если Firebase зависает
-  /// (провайдер рвёт соединение), не держим главный поток дольше этого
-  /// времени — иначе получаем ANR.
-  static const Duration _hardTimeout = Duration(seconds: 5);
+  /// Таймаут на один fetchAndActivate (защита от зависания, когда
+  /// провайдер рвёт соединение — без него получаем ANR).
+  static const Duration _hardTimeout = Duration(seconds: 20);
+
+  /// Штатный период фонового re-fetch в живом процессе: смена домена
+  /// доезжает без перезапуска приложения.
+  static const Duration _steadyRefreshInterval = Duration(minutes: 10);
+
+  /// Попыток первой серии (интервал удваивается: 3с, 6с, 12с, 24с, 48с).
+  static const int _maxBootRetries = 5;
+
+  /// Безопасный интервал для продакшна (5 минут): при Duration.zero на
+  /// тысячах устройств проект упирается в часовую серверную квоту Firebase.
+  /// Мгновенная доставка изменений из консоли обеспечивается подпиской
+  /// onConfigUpdated ниже (обходит minimumFetchInterval официально).
+  static const Duration _minFetchInterval =
+      kDebugMode ? Duration.zero : Duration(minutes: 5);
 
   FirebaseRemoteConfig? _rc;
+  Timer? _steadyTimer;
+  StreamSubscription<RemoteConfigUpdate>? _realtimeSub;
+
+  /// Завершается при первом успешно применённом конфиге (baseUrl не пуст).
+  final Completer<void> _firstApplied = Completer<void>();
 
   /// Инициализация при старте приложения. Никогда не бросает исключение
   /// наружу — падение Remote Config не должно ронять запуск приложения.
@@ -40,36 +65,44 @@ class RemoteConfigService {
       final rc = FirebaseRemoteConfig.instance;
       _rc = rc;
 
-      // Значения по умолчанию = текущие зашитые домены (fallback).
+      // Зашитых доменов в билде НЕТ — дефолты пустые. Значение API
+      // применяем только когда оно реально пришло из Remote Config
+      // (source == valueRemote), иначе затирали бы сохранённый домен.
       await rc.setDefaults(<String, dynamic>{
-        kApiBaseUrl: ApiConfig.baseUrl,
-        kPanelBaseUrl: ApiConfig.panelBaseUrl,
-        kSubBaseUrl: ApiConfig.subBaseUrl,
+        kEncryptedApiUrl: ApiConfig.defaultBaseUrlEncrypted,
+        kEncryptedPanelUrl: ApiConfig.panelBaseUrlEncrypted,
+        kEncryptedSubUrl: ApiConfig.subBaseUrlEncrypted,
       });
 
       await rc.setConfigSettings(RemoteConfigSettings(
-        // Сколько ждём ответ от Firebase, прежде чем взять дефолты.
-        fetchTimeout: const Duration(seconds: 10),
-        // Как часто разрешаем реально ходить в сеть за новыми значениями.
-        // 1 час — компромисс: быстро реагируем на смену домена, но не спамим.
-        // Для отладки можно поставить Duration.zero.
-        minimumFetchInterval: const Duration(hours: 1),
+        fetchTimeout: const Duration(seconds: 30),
+        minimumFetchInterval: _minFetchInterval,
       ));
 
-      // Скачиваем + активируем свежие значения с жёстким таймаутом.
-      // Firebase.fetchAndActivate() иногда зависает, когда провайдер
-      // рвёт соединение (Connection closed by peer) — без этого
-      // обёртки приложение может зависнуть и получить ANR.
-      await rc.fetchAndActivate().timeout(_hardTimeout, onTimeout: () {
-        if (kDebugMode) {
-          debugPrint('RemoteConfigService: fetchAndActivate timed out '
-              'after $_hardTimeout');
-        }
-        return false;
-      });
+      // Real-time обновления Remote Config: как только в консоли публикуется
+      // новое значение, SDK получает событие и активирует его мгновенно.
+      _realtimeSub?.cancel();
+      _realtimeSub = rc.onConfigUpdated.listen(
+        (_) async {
+          try {
+            await rc.activate();
+            _applyToApiConfig(rc);
+          } catch (e) {
+            if (kDebugMode) {
+              debugPrint('RemoteConfigService: real-time activate failed: $e');
+            }
+          }
+        },
+        onError: (Object e) {
+          if (kDebugMode) {
+            debugPrint('RemoteConfigService: real-time stream error: $e');
+          }
+        },
+      );
 
-      // Переносим в ApiConfig, чтобы весь код читал уже актуальные домены.
-      _applyToApiConfig(rc);
+      // Первая серия fetch'ей с повторами — в фоне; после успеха конфиг
+      // продолжит обновляться штатным steady-циклом.
+      unawaited(_fetchLoop());
     } catch (e, s) {
       // Нет сети / Firebase недоступен — работаем на дефолтах ApiConfig.
       if (kDebugMode) {
@@ -97,14 +130,84 @@ class RemoteConfigService {
     }
   }
 
-  void _applyToApiConfig(FirebaseRemoteConfig rc) {
-    final api = rc.getString(kApiBaseUrl);
-    final panel = rc.getString(kPanelBaseUrl);
-    final sub = rc.getString(kSubBaseUrl);
+  /// Один fetchAndActivate + применение. Возвращает true, если конфиг
+  /// реально пришёл с сервера (source == valueRemote).
+  Future<bool> _fetchOnce() async {
+    final rc = _rc;
+    if (rc == null) return false;
+    try {
+      await rc.fetchAndActivate().timeout(
+        _hardTimeout,
+        onTimeout: () => false,
+      );
+      _applyToApiConfig(rc);
+      return rc.getValue(kEncryptedApiUrl).source == ValueSource.valueRemote;
+    } catch (e) {
+      if (kDebugMode) debugPrint('RemoteConfigService: fetch failed: $e');
+      return false;
+    }
+  }
 
-    if (_looksValid(api)) ApiConfig.baseUrl = _clean(api);
-    if (_looksValid(panel)) ApiConfig.panelBaseUrl = _clean(panel);
-    if (_looksValid(sub)) ApiConfig.subBaseUrl = _clean(sub);
+  /// Стартовая серия попыток + фоновый re-fetch на всю жизнь процесса.
+  /// Раньше конфиг читался только при старте: юзер с приложением в памяти
+  /// никогда не получал новый домен из консоли.
+  Future<void> _fetchLoop() async {
+    var delay = const Duration(seconds: 3);
+    for (var attempt = 0; attempt < _maxBootRetries; attempt++) {
+      final ok = await _fetchOnce();
+      if (ok) break;
+      if (attempt < _maxBootRetries - 1) {
+        await Future.delayed(delay);
+        delay *= 2;
+      }
+    }
+    _steadyTimer ??= Timer.periodic(
+      _steadyRefreshInterval,
+      (_) => unawaited(refresh()),
+    );
+  }
+
+  /// Ждёт первый успешно применённый конфиг (не дольше [timeout]).
+  /// Для действий, которым нужен baseUrl прямо сейчас (регистрация, логин):
+  /// без ожидания запрос на чистой установке уходил на пустой URL —
+  /// отсюда красная «Ошибка подключения» при живом интернете.
+  Future<bool> ensureReady({Duration timeout = const Duration(seconds: 20)}) async {
+    if (ApiConfig.baseUrl.isNotEmpty) return true;
+    try {
+      await _firstApplied.future.timeout(timeout);
+      return true;
+    } on TimeoutException {
+      return false;
+    }
+  }
+
+  void _applyToApiConfig(FirebaseRemoteConfig rc) {
+    // Только значение, реально пришедшее из Remote Config (source ==
+    // valueRemote). Если Firebase не ответил, rc отдаёт дефолт из
+    // setDefaults — применить его значило бы затереть сохранённый домен.
+    // Значения приходят закодированными (gwenc1) — расшифровываем здесь,
+    // непосредственно перед применением.
+    final apiValue = rc.getValue(kEncryptedApiUrl);
+    if (apiValue.source == ValueSource.valueRemote) {
+      final decoded = _resolveDecoded(apiValue.asString());
+      if (decoded != null) {
+        // Валидирует сам: принимает и обычный URL, и wildcard-шаблон.
+        ApiHostService.instance.apply(decoded);
+      }
+    }
+
+    final panel = _resolveDecoded(rc.getString(kEncryptedPanelUrl));
+    final sub = _resolveDecoded(rc.getString(kEncryptedSubUrl));
+    if (panel != null && _looksValid(panel)) {
+      ApiConfig.panelBaseUrl = _clean(panel);
+    }
+    if (sub != null && _looksValid(sub)) {
+      ApiConfig.subBaseUrl = _clean(sub);
+    }
+
+    if (ApiConfig.baseUrl.isNotEmpty && !_firstApplied.isCompleted) {
+      _firstApplied.complete();
+    }
 
     if (kDebugMode) {
       debugPrint('RemoteConfig applied → api=${ApiConfig.baseUrl}, '
@@ -114,9 +217,23 @@ class RemoteConfigService {
 
   /// Отсекаем мусор: пустые строки и значения без http-схемы,
   /// чтобы случайная опечатка в консоли не сломала приложение.
-  bool _looksValid(String value) {
-    final v = value.trim();
+  bool _looksValid(String? value) {
+    final v = value?.trim() ?? '';
     return v.startsWith('http://') || v.startsWith('https://');
+  }
+
+  /// Расшифровка значения из Remote Config. Битое закодированное значение
+  /// (опечатка в консоли) возвращает null — источник пропускается,
+  /// приложение работает на сохранённом/дефолтном домене. Plaintext
+  /// (значение без префикса) проходит как есть.
+  String? _resolveDecoded(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return null;
+    final decoded = SecretCodec.decode(trimmed);
+    if (SecretCodec.isEncoded(trimmed) && !_looksValid(decoded)) {
+      return null;
+    }
+    return decoded;
   }
 
   /// Убираем завершающий слэш, чтобы не было двойных `//` при склейке путей.

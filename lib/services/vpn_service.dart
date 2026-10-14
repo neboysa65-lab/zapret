@@ -271,9 +271,14 @@ class VpnService {
       // Request VPN permission and start
       if (await _flutterV2ray.requestPermission()) {
         if (attemptId != _connectAttempt) return false;
-        if (blockedApps != null && blockedApps.isNotEmpty) {
-          print('Split Tunneling: ${blockedApps.length} apps blocked from VPN');
-        }
+        // Всегда исключаем само приложение (app.vless.vpn) из TUN-интерфейса:
+        // иначе запросы к Firebase Remote Config и API идут через зарубежную
+        // ноду, и гео-условие RU в Firebase сбрасывается на не-RU IP.
+        final effectiveBlockedApps = <String>{
+          'app.vless.vpn',
+          ...?blockedApps,
+        }.toList();
+        print('Split Tunneling: ${effectiveBlockedApps.length} apps blocked from VPN');
         // Retry up to 2 times if foreground service fails to start in time
         for (int attempt = 1; attempt <= 2; attempt++) {
           if (attemptId != _connectAttempt) return false;
@@ -281,7 +286,7 @@ class VpnService {
             await _flutterV2ray.startVless(
               remark: config.cleanName,
               config: jsonConfig,
-              blockedApps: blockedApps,
+              blockedApps: effectiveBlockedApps,
               proxyOnly: false,
             );
             return attemptId == _connectAttempt;

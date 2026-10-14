@@ -220,6 +220,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
     final url = '${ApiConfig.baseUrl}/pay?uid=$userId';
+    // Без Remote Config baseUrl пуст — открывать нечего (иначе WebView
+    // покажет системный экран ошибки с адресом).
+    if (Uri.tryParse(url)?.host.isEmpty ?? true) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Нет подключения. Проверьте интернет и попробуйте позже.')),
+      );
+      return;
+    }
     final activated = await Navigator.push<bool>(
       context,
       MaterialPageRoute(builder: (_) => PayWebScreen(url: url)),

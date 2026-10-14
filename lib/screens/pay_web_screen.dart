@@ -5,7 +5,6 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-import '../config/api_config.dart';
 import '../config/app_theme.dart';
 import '../providers/auth_provider.dart';
 
@@ -38,6 +37,7 @@ class _PayWebScreenState extends State<PayWebScreen>
   Timer? _pollTimer;
   bool _pageLoading = true;
   bool _rendererCrashed = false;
+  bool _loadFailed = false;
   bool _closing = false;
   bool _refreshInFlight = false;
   bool _externalOpened = false;
@@ -46,7 +46,13 @@ class _PayWebScreenState extends State<PayWebScreen>
   static const _timeout = Duration(minutes: 10);
 
   /// Хост нашего сайта с выбором тарифа — только он остаётся в WebView.
-  static final String _inAppHost = Uri.parse(ApiConfig.baseUrl).host;
+  /// Берём из открытой страницы: домен API может смениться, пока экран жив.
+  /// Пустой url (нет домена — чистая установка без Remote Config) = сразу
+  /// экран ошибки, WebView не открываем вовсе.
+  late final bool _hasValidUrl =
+      Uri.tryParse(widget.url)?.host.isNotEmpty ?? false;
+  late final String _inAppHost =
+      _hasValidUrl ? Uri.parse(widget.url).host : '';
 
   @override
   void initState() {
@@ -72,10 +78,30 @@ class _PayWebScreenState extends State<PayWebScreen>
                 _rendererCrashed = true;
               });
             }
+            return;
+          }
+          // Обрыв сети при загрузке: системная страница ошибки Android
+          // («зелёный дроид») показывает ПОЛНЫЙ URL с нашим доменом —
+          // не даём ей появиться: прячем WebView и рисуем свой экран
+          // без каких-либо адресов. Субресурсные ошибки игнорируем —
+          // страница может продолжить грузиться.
+          // == true: isForMainFrame — bool?, на части платформ может быть null.
+          if (error.isForMainFrame == true) {
+            if (mounted) {
+              setState(() {
+                _pageLoading = false;
+                _loadFailed = true;
+              });
+            }
           }
         },
-      ))
-      ..loadRequest(Uri.parse(widget.url));
+      ));
+
+    if (_hasValidUrl) {
+      _controller.loadRequest(Uri.parse(widget.url));
+    } else {
+      _loadFailed = true;
+    }
 
     _startPolling();
   }
@@ -175,8 +201,53 @@ class _PayWebScreenState extends State<PayWebScreen>
       body: SafeArea(
         child: Stack(
           children: [
-            if (!_rendererCrashed) WebViewWidget(controller: _controller),
-            if (_pageLoading && !_rendererCrashed)
+            if (!_rendererCrashed && !_loadFailed)
+              WebViewWidget(controller: _controller),
+
+            if (_loadFailed)
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.wifi_off_rounded,
+                        size: 48, color: AppColors.error),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Нет подключения к интернету',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Проверьте связь и попробуйте ещё раз',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _loadFailed = false;
+                          _pageLoading = true;
+                        });
+                        _controller.reload();
+                      },
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: const Text('Повторить'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.primaryGreen,
+                        foregroundColor: Colors.black,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            if (_pageLoading && !_rendererCrashed && !_loadFailed)
               const Center(child: CircularProgressIndicator()),
             if (_rendererCrashed)
               Center(
@@ -212,7 +283,10 @@ class _PayWebScreenState extends State<PayWebScreen>
                   ],
                 ),
               ),
-            if (_externalOpened && !_pageLoading && !_rendererCrashed)
+            if (_externalOpened &&
+                !_pageLoading &&
+                !_rendererCrashed &&
+                !_loadFailed)
               Positioned(
                 left: 16,
                 right: 16,
