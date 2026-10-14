@@ -65,8 +65,17 @@ class DynamicBaseUrlInterceptor(
     private fun redirected(request: Request, configured: HttpUrl): Request {
         val originalUrl = request.url
 
-        // Уже на нужном хосте — ничего не меняем.
-        if (isSameEndpoint(originalUrl, configured)) {
+        // Переносим и хост, и префикс пути (напр. /vpn/api/v1/ ->
+        // /gw/vpn/api/v1/): если в кэше с прошлого запуска лежала база с
+        // другим путём, одна подмена host уводила бы запросы в 404.
+        val suffix = originalUrl.encodedPath.substringAfter("/api/v1/", "")
+        val targetPath = if (suffix.isNotEmpty() && configured.encodedPath.endsWith("/api/v1/")) {
+            configured.encodedPath + suffix
+        } else {
+            originalUrl.encodedPath
+        }
+
+        if (isSameEndpoint(originalUrl, configured) && targetPath == originalUrl.encodedPath) {
             return request
         }
 
@@ -74,6 +83,7 @@ class DynamicBaseUrlInterceptor(
             .scheme(configured.scheme)
             .host(configured.host)
             .port(configured.port)
+            .encodedPath(targetPath)
             .build()
 
         Timber.d("DynamicBaseUrl: %s -> %s", originalUrl.host, configured.host)

@@ -52,7 +52,7 @@ class MyApp : Application() {
 
             // Периодический re-fetch конфига в живом процессе: без этого
             // смена домена в консоли доезжала только после перезапуска.
-            RemoteConfigManager.startPeriodicRefresh()
+            RemoteConfigManager.startPeriodicRefresh(this)
 
             // GW-онлайн: сервис может восстановить туннель сам (START_STICKY)
             // без открытого UI — переподписываем heartbeat на месте.

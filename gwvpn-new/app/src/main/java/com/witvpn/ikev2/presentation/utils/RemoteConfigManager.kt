@@ -150,19 +150,27 @@ object RemoteConfigManager {
      * приложения. Первая серия — с удвоением паузы (до 10 минут), дальше
      * штатный цикл раз в 10 минут.
      */
-    fun startPeriodicRefresh() {
+    fun startPeriodicRefresh(context: Context) {
         if (refreshJob?.isActive == true) return
+        val appContext = context.applicationContext
         refreshJob = refreshScope.launch {
             var delayMs = 30_000L
             while (isActive) {
                 delay(delayMs)
-                val ok = runCatching {
-                    remoteConfig?.let { rc -> Tasks.await(rc.fetchAndActivate(), 20, TimeUnit.SECONDS) }
-                }.getOrElse {
+                val ok = try {
+                    val rc = remoteConfig
+                    if (rc != null) {
+                        Tasks.await(rc.fetchAndActivate(), 20, TimeUnit.SECONDS)
+                        persist(appContext, KEY_ENCRYPTED_API_URL, rc.getString(KEY_ENCRYPTED_API_URL))
+                        persist(appContext, KEY_ENCRYPTED_PAYMENT_URL, rc.getString(KEY_ENCRYPTED_PAYMENT_URL))
+                        persist(appContext, KEY_ENCRYPTED_SUBSCRIPTION_URL, rc.getString(KEY_ENCRYPTED_SUBSCRIPTION_URL))
+                        true
+                    } else false
+                } catch (it: Throwable) {
                     Timber.w(it, "RemoteConfig: periodic fetch failed")
                     false
                 }
-                delayMs = if (ok == true) 600_000L else (delayMs * 2).coerceAtMost(600_000L)
+                delayMs = if (ok) 600_000L else (delayMs * 2).coerceAtMost(600_000L)
             }
         }
     }
