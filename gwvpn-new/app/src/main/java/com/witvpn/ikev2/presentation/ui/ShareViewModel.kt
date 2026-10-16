@@ -34,6 +34,19 @@ class ShareViewModel @Inject constructor(
     // черновика (например GW), затирая выбор пользователя.
     var lastProcessedServerEventKey: String? = null
 
+    // Выбор VLESS-сервера на экране списка. Значение — счётчик события;
+    // ConnectFragment запоминает обработанный, чтобы липкий replay при
+    // пересоздании view не вызывал повторное переподключение.
+    private val _vlessServerPicked = MutableLiveData<Long>()
+    val vlessServerPicked: LiveData<Long> = _vlessServerPicked
+    var lastHandledVlessPick: Long = 0L
+    private var vlessPickCounter = 0L
+
+    fun notifyVlessServerPicked() {
+        vlessPickCounter += 1
+        _vlessServerPicked.value = vlessPickCounter
+    }
+
     val isPremium: Boolean
         get() = user?.hasPremiumSubscribe == true
 

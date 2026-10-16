@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Load bar: track + rounded fill (scale keeps the rounded ends); fill colour via progressTintList -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <corners android:radius="2dp" />
+            <solid android:color="@color/srv_load_track" />
+        </shape>
+    </item>
+    <item android:id="@android:id/progress">
+        <scale
+            android:scaleGravity="start|center_vertical"
+            android:scaleWidth="100%">
+            <shape android:shape="rectangle">
+                <corners android:radius="2dp" />
+                <solid android:color="#FFFFFFFF" />
+            </shape>
+        </scale>
+    </item>
+</layer-list>

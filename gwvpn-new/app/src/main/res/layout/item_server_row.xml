@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One row of the server list; also reused as the "current server" card -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/rowRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginHorizontal="16dp"
+    android:layout_marginVertical="6dp"
+    android:background="@drawable/bg_srv_row"
+    android:gravity="center_vertical"
+    android:minHeight="76dp"
+    android:orientation="horizontal"
+    android:paddingStart="16dp"
+    android:paddingTop="12dp"
+    android:paddingEnd="14dp"
+    android:paddingBottom="12dp">
+
+    <ImageView
+        android:id="@+id/imgIcon"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:importantForAccessibility="no"
+        android:scaleType="fitCenter"
+        tools:src="@drawable/ic_globe" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:fontFamily="@font/play"
+            android:maxLines="1"
+            android:textColor="@color/white"
+            android:textSize="17sp"
+            android:textStyle="bold"
+            tools:text="GWAPP-DE01" />
+
+        <TextView
+            android:id="@+id/tvSubtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/srv_text_secondary"
+            android:textSize="14sp"
+            tools:text="Frankfurt am Main" />
+    </LinearLayout>
+
+    <!-- Server load: percent + short bar, colour follows the load level -->
+    <LinearLayout
+        android:id="@+id/loadContainer"
+        android:layout_width="44dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:visibility="gone"
+        tools:visibility="visible">
+
+        <TextView
+            android:id="@+id/tvLoad"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="@font/play"
+            android:includeFontPadding="false"
+            android:textColor="@color/color_load_low"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            tools:text="17%" />
+
+        <ProgressBar
+            android:id="@+id/loadBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="36dp"
+            android:layout_height="4dp"
+            android:layout_marginTop="5dp"
+            android:indeterminate="false"
+            android:max="100"
+            android:progressDrawable="@drawable/bg_srv_load_bar"
+            android:progressTint="@color/color_load_low"
+            tools:progress="17" />
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/imgStatus"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_marginStart="12dp"
+        android:importantForAccessibility="no"
+        android:scaleType="centerInside"
+        android:visibility="gone"
+        tools:src="@drawable/ic_srv_lock"
+        tools:visibility="visible" />
+
+</LinearLayout>

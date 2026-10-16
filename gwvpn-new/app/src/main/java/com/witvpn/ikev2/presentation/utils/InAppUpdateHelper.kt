@@ -13,6 +13,11 @@ import timber.log.Timber
 private typealias CheckUpdateResult = (appUpdateInfo: AppUpdateInfo) -> Unit
 
 object InAppUpdateHelper {
+    /** Play запустил экран обновления в этом процессе (см. AppUpdatePrompt). */
+    @Volatile
+    var isPlayUpdateFlowStarted = false
+        private set
+
     private fun checkUpdatesViaGPS(context: Context, onResult: CheckUpdateResult) {
         val appUpdateManager = AppUpdateManagerFactory.create(context)
         val appUpdateInfoTask = appUpdateManager.appUpdateInfo
@@ -23,6 +28,7 @@ object InAppUpdateHelper {
 
     private fun requestUpdateViaGPS(activity: Activity, appUpdateInfo: AppUpdateInfo) {
         val appUpdateManager = AppUpdateManagerFactory.create(activity)
+        isPlayUpdateFlowStarted = true
         appUpdateManager.startUpdateFlow(
             appUpdateInfo,
             activity,

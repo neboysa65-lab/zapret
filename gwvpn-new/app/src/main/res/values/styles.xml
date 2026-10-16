@@ -133,4 +133,22 @@
         <item name="android:background">@android:color/transparent</item>
     </style>
 
+
+    <!-- Окно «Доступно обновление»: своя карточка, прозрачное окно, затемнение -->
+    <style name="UpdateDialogTheme" parent="Theme.AppCompat.Dialog">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.72</item>
+        <item name="android:windowMinWidthMajor">100%</item>
+        <item name="android:windowMinWidthMinor">100%</item>
+        <item name="android:windowAnimationStyle">@style/UpdateDialogAnimation</item>
+    </style>
+
+    <style name="UpdateDialogAnimation">
+        <item name="android:windowEnterAnimation">@anim/update_dialog_enter</item>
+        <item name="android:windowExitAnimation">@anim/update_dialog_exit</item>
+    </style>
 </resources>

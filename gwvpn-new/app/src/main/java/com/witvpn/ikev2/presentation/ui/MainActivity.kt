@@ -34,7 +34,12 @@ import com.witvpn.ikev2.domain.model.User
 import com.witvpn.ikev2.domain.repository.UserRepository
 import com.witvpn.ikev2.presentation.base.BaseActivity
 import com.witvpn.ikev2.presentation.utils.GooglePlayHelper
+import com.witvpn.ikev2.presentation.utils.AppUpdatePrompt
 import com.witvpn.ikev2.presentation.utils.InAppUpdateHelper
+import com.witvpn.ikev2.presentation.utils.RemoteConfigManager
+import com.witvpn.ikev2.presentation.utils.UpdateKind
+import com.witvpn.ikev2.presentation.ui.update.UpdateAvailableDialog
+import com.witvpn.ikev2.presentation.ui.update.UpdatePromptViewModel
 import com.witvpn.ikev2.presentation.utils.PremiumNotificationHelper
 import com.witvpn.ikev2.presentation.utils.SharePrefs
 import com.witvpn.ikev2.presentation.utils.getBooleanPref
@@ -70,6 +75,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), MainDelegate {
     }
 
     private val viewModel: ShareViewModel by viewModels()
+    private val updatePromptViewModel: UpdatePromptViewModel by viewModels()
     private val handleUserResource = Observer<User> {}
 
     @javax.inject.Inject
@@ -137,6 +143,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), MainDelegate {
 
         InAppUpdateHelper.checkAndRequestAppUpdate(this)
 
+        // Окно «Доступно обновление» по версии из Remote Config
+        val activityRef = java.lang.ref.WeakReference(this)
+        RemoteConfigManager.whenReady { activityRef.get()?.maybeShowUpdatePrompt() }
+
 //        initNavigationDrawer()
 
         try {
@@ -187,6 +197,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), MainDelegate {
             } else {
                 binding.bottomNavigation.visibility = GONE
             }
+            if (destination.id == R.id.mainFragment) {
+                binding.root.post { maybeShowUpdatePrompt() }
+            }
         }
         binding.bottomNavigation.setOnItemSelectedListener {
             val pageId = when(it.itemId){
@@ -218,8 +231,35 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), MainDelegate {
         }
     }
 
+    /**
+     * Показывает окно обновления на главном экране, когда Remote Config готов.
+     * Безопасно вызывать сколько угодно раз: дубликатов не будет, а после
+     * «Позже» окно не появится до следующего запуска.
+     */
+    private fun maybeShowUpdatePrompt() {
+        if (updatePromptViewModel.handled || isFinishing || isDestroyed) return
+        if (!RemoteConfigManager.isInitialFetchFinished()) return
+        if (navController.currentDestination?.id != R.id.mainFragment) return
+        val fm = supportFragmentManager
+        if (fm.isStateSaved || fm.findFragmentByTag(UpdateAvailableDialog.TAG) != null) return
+        try {
+            val info = AppUpdatePrompt.resolve(this)
+            // Play уже показал свой экран обновления — второй раз не дублируем
+            if (info == null ||
+                (info.kind == UpdateKind.OPTIONAL && InAppUpdateHelper.isPlayUpdateFlowStarted)
+            ) {
+                updatePromptViewModel.handled = true
+                return
+            }
+            UpdateAvailableDialog.newInstance(info).show(fm, UpdateAvailableDialog.TAG)
+        } catch (e: Exception) {
+            Timber.e(e, "Update prompt failed")
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        maybeShowUpdatePrompt()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val userId = getSessionUserId() ?: return@launch

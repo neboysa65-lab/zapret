@@ -404,4 +404,27 @@
     <string name="desc_vless"><b>VLESS Reality</b> — is currently one of the most powerful combinations for bypassing blocks. Simply put, it\'s a way to make your VPN traffic absolutely indistinguishable from visiting a regular popular website. It works as fast as possible due to the absence of unnecessary checks, making your traffic look like a regular website.\n\nThe provider sees no signs of a VPN and considers your connection legitimate. When checked by a censor, your server simply pretends to be a known third-party resource. Blocking such a connection is practically impossible without shutting down the entire global internet. This is the most stable and high-speed method of bypassing restrictions today in countries with severe censorship.</string>
     <string name="desc_awg"><b>AmneziaWG</b> — is an evolution of the famous WireGuard, created specifically to work under severe censorship. It has retained the legendary lightness and colossal speed of the original protocol, but has become practically invulnerable to tracking systems. Developers removed the network signatures by which provider DPI systems instantly recognize regular WireGuard.\n\nOur VPN uses the most current version of the protocol, AmneziaWG 3.1. Version 1.5 introduced masking as DNS and QUIC requests, version 2.0 turned the protocol into a true master of mimicry to bypass heuristic analysis, and version 3.1 added handshake protection, expanded obfuscation of technical values and resistance to AI-based traffic analysis. Now censors that evaluate the entire connection as a stream — packet sizes, timings and keepalive patterns — see only ordinary chaotic noise or the standard operation of services.</string>
     <string name="desc_gw"><b>GW</b> — is an independent network protocol built from scratch by our team. We deliberately rejected ready-made templates and add-ons layered on top of third-party technologies. The GW architecture was originally designed to solve complex practical tasks in real-world network conditions. GW delivers minimal connection setup latency, effectively holds the channel when network quality degrades, and remains resilient to harsh external restrictions.\n\nWe keep the protocol\'s architectural details closed. Our goal is to spare users from technical complexities and deliver a flawless result — a stable and fast connection in one click.\n\nThe GW protocol is constantly evolving: we test, refine and optimize it until we achieve exactly the result we aim for.</string>
+    <!-- Server list -->
+    <string name="server_list_title">Servers</string>
+    <string name="server_list_back">Back</string>
+    <string name="current_server">Current server</string>
+    <string name="auto_select">Auto-select</string>
+    <string name="auto_select_desc">Best available server</string>
+    <string name="auto_select_now">Now: %1$s</string>
+    <string name="auto_select_unavailable">No servers available for auto-select</string>
+    <string name="server_not_selected">No server selected</string>
+    <string name="server_list_empty">No servers available right now</string>
+    <string name="server_list_load_failed">Couldn\'t load the server list</string>
+    <string name="server_list_retry">Retry</string>
+
+    <!-- Update prompt -->
+    <string name="update_title">Update available</string>
+    <string name="update_title_forced">Update required</string>
+    <string name="update_message">The new version fixes bugs and makes connections more stable.</string>
+    <string name="update_message_forced">This version is no longer supported. Update the app to keep using the VPN.</string>
+    <string name="update_whats_new">What\'s new</string>
+    <string name="update_version_change">%1$s → %2$s</string>
+    <string name="update_now">Update</string>
+    <string name="update_later">Later</string>
+    <string name="update_open_failed">Couldn\'t open the store. Please update the app from Google Play.</string>
 </resources>

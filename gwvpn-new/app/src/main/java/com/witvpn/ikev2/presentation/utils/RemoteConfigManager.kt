@@ -1,6 +1,8 @@
 package com.witvpn.ikev2.presentation.utils
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import com.google.firebase.ktx.Firebase
 import com.google.firebase.remoteconfig.FirebaseRemoteConfig
 import com.google.firebase.remoteconfig.ktx.remoteConfig
@@ -42,6 +44,9 @@ import java.util.concurrent.TimeUnit
  *   - encrypted_payment_url      — URL оплаты с %s для userId (gwenc1)
  *   - encrypted_subscription_url — URL подписки (gwenc1)
  *   - heartbeat_enabled / heartbeat_interval_seconds — управление heartbeat
+ *   - update_latest_version / update_min_version / update_url /
+ *     update_notes_ru / update_notes_en — окно «Доступно обновление»
+ *     (см. AppUpdatePrompt)
  *
  * URL новый клиент читает ТОЛЬКО из encrypted_*: открытые api_base_url /
  * payment_url / subscription_url (нужны старым версиям) намеренно
@@ -75,6 +80,17 @@ object RemoteConfigManager {
     const val KEY_ENCRYPTED_SUBSCRIPTION_URL = "encrypted_subscription_url"
     const val KEY_HEARTBEAT_ENABLED = "heartbeat_enabled"
     const val KEY_HEARTBEAT_INTERVAL_SECONDS = "heartbeat_interval_seconds"
+
+    // Окно обновления: пустое значение = выключено.
+    const val KEY_UPDATE_LATEST_VERSION = "update_latest_version"
+    const val KEY_UPDATE_MIN_VERSION = "update_min_version"
+    const val KEY_UPDATE_URL = "update_url"
+    const val KEY_UPDATE_NOTES_RU = "update_notes_ru"
+    const val KEY_UPDATE_NOTES_EN = "update_notes_en"
+
+    // Сколько ждём первый fetch, прежде чем работать на уже активированном
+    // (с прошлого запуска) конфиге.
+    private const val INITIAL_FETCH_WAIT_MS = 8_000L
 
     // Оба активных бэкенд-URL (RU = media-net, не-RU = 45.95.96.203) в gwenc1:
     // используются как автоматический failover, если основной домен из Remote
@@ -122,6 +138,11 @@ object RemoteConfigManager {
     @Volatile
     private var activeFailoverApiUrl: String? = null
 
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+    private val readyLock = Any()
+    private var initialFetchFinished = false // guarded by readyLock
+    private val readyCallbacks = ArrayList<() -> Unit>() // guarded by readyLock
+
     /**
      * Инициализация + первичная загрузка конфига. Вызывать один раз из
      * Application.onCreate(). Метод неблокирующий: сеть подтягивается в фоне,
@@ -150,7 +171,9 @@ object RemoteConfigManager {
                     } else {
                         Timber.w(task.exception, "RemoteConfig: fetch/activate failed")
                     }
+                    markInitialFetchFinished()
                 }
+            mainHandler.postDelayed({ markInitialFetchFinished() }, INITIAL_FETCH_WAIT_MS)
 
             // Real-time обновления Remote Config: как только в консоли
             // публикуется новое значение, SDK получает пуш и активирует его
@@ -178,8 +201,56 @@ object RemoteConfigManager {
             // тогда просто работаем на кэше/дефолтах, ничего не падает.
             firebaseAvailable = false
             Timber.e(e, "RemoteConfig: init failed, using cached/default domains")
+            markInitialFetchFinished()
         }
     }
+
+    /** Первый fetch завершён (успешно, с ошибкой или по таймауту). */
+    fun isInitialFetchFinished(): Boolean = synchronized(readyLock) { initialFetchFinished }
+
+    /**
+     * Выполнить [callback] на main-потоке, когда первый fetch завершится
+     * (или сразу, если уже завершён). Срабатывает один раз.
+     */
+    fun whenReady(callback: () -> Unit) {
+        val runNow = synchronized(readyLock) {
+            if (initialFetchFinished) true else {
+                readyCallbacks += callback
+                false
+            }
+        }
+        if (runNow) mainHandler.post(callback)
+    }
+
+    private fun markInitialFetchFinished() {
+        val pending = synchronized(readyLock) {
+            if (initialFetchFinished) return
+            initialFetchFinished = true
+            ArrayList(readyCallbacks).also { readyCallbacks.clear() }
+        }
+        pending.forEach { mainHandler.post(it) }
+    }
+
+    /** Настройки окна обновления из Remote Config (пустые строки = не задано). */
+    fun getUpdateConfig(context: Context): UpdateConfig = UpdateConfig(
+        latestVersion = resolve(context, KEY_UPDATE_LATEST_VERSION, ""),
+        minSupportedVersion = resolve(context, KEY_UPDATE_MIN_VERSION, ""),
+        // URL можно задать открытым текстом или в gwenc1 (SecretCodec)
+        updateUrl = resolve(context, KEY_UPDATE_URL, "")
+            .takeIf { it.isNotBlank() }
+            ?.let { SecretCodec.decode(it) }
+            .orEmpty(),
+        notesRu = resolve(context, KEY_UPDATE_NOTES_RU, ""),
+        notesEn = resolve(context, KEY_UPDATE_NOTES_EN, ""),
+    )
+
+    data class UpdateConfig(
+        val latestVersion: String,
+        val minSupportedVersion: String,
+        val updateUrl: String,
+        val notesRu: String,
+        val notesEn: String,
+    )
 
     /**
      * Периодический re-fetch конфига в живом процессе: VPN-процесс живёт

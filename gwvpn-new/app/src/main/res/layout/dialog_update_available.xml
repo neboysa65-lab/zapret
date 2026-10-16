@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingHorizontal="20dp"
+    android:paddingVertical="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_update_dialog"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingHorizontal="22dp"
+        android:paddingTop="28dp"
+        android:paddingBottom="14dp">
+
+        <FrameLayout
+            android:layout_width="84dp"
+            android:layout_height="84dp">
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/bg_update_icon_glow" />
+
+            <ImageView
+                android:layout_width="60dp"
+                android:layout_height="60dp"
+                android:layout_gravity="center"
+                android:background="@drawable/bg_srv_auto_icon"
+                android:importantForAccessibility="no"
+                android:padding="15dp"
+                android:src="@drawable/ic_update_download" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/tvTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:fontFamily="@font/play"
+            android:gravity="center"
+            android:text="@string/update_title"
+            android:textColor="@color/white"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvVersion"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_update_chip"
+            android:fontFamily="@font/play"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="5dp"
+            android:textColor="#C9D3E3"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            tools:text="3.1.4 → 3.1.5" />
+
+        <TextView
+            android:id="@+id/tvMessage"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:gravity="center"
+            android:lineSpacingExtra="3dp"
+            android:text="@string/update_message"
+            android:textColor="#B4B9C0"
+            android:textSize="15sp" />
+
+        <LinearLayout
+            android:id="@+id/notesBlock"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_update_notes"
+            android:orientation="vertical"
+            android:padding="14dp"
+            android:visibility="gone"
+            tools:visibility="visible">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/play"
+                android:text="@string/update_whats_new"
+                android:textColor="@color/white"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvNotes"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:ellipsize="end"
+                android:lineSpacingExtra="2dp"
+                android:maxLines="8"
+                android:textColor="#B4B9C0"
+                android:textSize="14sp"
+                tools:text="• Faster connection to GW servers\n• Fixed rare crash on Android 14" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/btnUpdate"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="22dp"
+            android:background="@drawable/bg_update_primary"
+            android:fontFamily="@font/play"
+            android:gravity="center"
+            android:text="@string/update_now"
+            android:textColor="@color/white"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnLater"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_update_secondary"
+            android:fontFamily="@font/play"
+            android:gravity="center"
+            android:text="@string/update_later"
+            android:textColor="@color/srv_text_secondary"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+</FrameLayout>

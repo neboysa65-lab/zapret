@@ -17,6 +17,8 @@ import com.witvpn.ikev2.features.splittunnel.SplitTunnelStore
 import com.witvpn.ikev2.presentation.CasAds
 import com.witvpn.ikev2.presentation.base.BaseFragment
 import com.witvpn.ikev2.presentation.ui.ShareViewModel
+import com.witvpn.ikev2.presentation.ui.servers.ServerAutoSelect
+import com.witvpn.ikev2.presentation.ui.servers.ServersFragment
 import com.witvpn.ikev2.presentation.ui.servers.ServersViewModel
 import com.witvpn.ikev2.presentation.utils.Util
 import com.witvpn.ikev2.presentation.utils.ConnectionTracker
@@ -487,12 +489,8 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             setProtocol("GW")
         }
 
-        binding.btnServers.setOnClickListener {
-            when {
-                isVlessMode -> showVlessServers()
-                else -> openServerList()
-            }
-        }
+        // Один экран списка серверов для всех трёх протоколов (VLESS тоже)
+        binding.btnServers.setOnClickListener { openServerList() }
         // Горячая кнопка туннелирования: с главного экрана сразу в раздел
         // Split Tunneling (тот же экран, что открывается из профиля)
         binding.btnSplitTunnel.setOnClickListener {
@@ -532,6 +530,7 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
                         ConnectionTracker.reportDisconnect(ctx, userId)
                     }
                 } else {
+                    applyAutoServerIfEnabled()
                     val awgServer = resolveAwgServerForConnection()
                     if (awgServer != null) {
                         if (shareViewModel.isPremium) {
@@ -591,6 +590,11 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             if (isGwMode) {
                 updateGwServerUI()
             }
+        }
+        shareViewModel.vlessServerPicked.observe(viewLifecycleOwner) { token ->
+            if (token == null || token == shareViewModel.lastHandledVlessPick) return@observe
+            shareViewModel.lastHandledVlessPick = token
+            onVlessServerPicked()
         }
         shareViewModel.serverLiveData.observe(viewLifecycleOwner) { (status, savedServer, _) ->
             if (status == Status.SUCCESS) {
@@ -670,9 +674,10 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
     private fun openServerList() {
         try {
             val bundle = android.os.Bundle().apply {
-                putString("PROTOCOL", when {
-                    isAwgMode -> "AWG"
-                    else -> "GW"
+                putString(ServersFragment.ARG_PROTOCOL, when {
+                    isVlessMode -> ServersFragment.PROTOCOL_VLESS
+                    isAwgMode -> ServersFragment.PROTOCOL_AWG
+                    else -> ServersFragment.PROTOCOL_GW
                 })
             }
             findNavController().navigate(R.id.serversFragment, bundle)
@@ -1031,6 +1036,7 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
             return
         }
 
+        applyAutoServerIfEnabled()
         val server = resolveGwServerForConnection()
         if (server == null || server.config == null) {
             Toast.makeText(context, "GW Server not found for this location", Toast.LENGTH_SHORT).show()
@@ -1155,44 +1161,92 @@ class ConnectFragment: BaseFragment<FragmentConnect2Binding>(R.layout.fragment_c
         }
     }
 
-    private fun showVlessServers() {
+    /**
+     * VLESS-сервер выбран на экране списка (VlessManager.selectedServer уже
+     * обновлён). Если VPN активен — переподключаемся без рекламы, как раньше
+     * делал bottom sheet; иначе просто обновляем кнопку сервера.
+     */
+    private fun onVlessServerPicked() {
+        if (!isAdded || !isVlessMode) return
+        val state = VyomVpnManager.currentState
+        val wasActive = state == VyomState.CONNECTED || state == VyomState.CONNECTING
+        if (!wasActive) {
+            updateVlessServerUI()
+            return
+        }
+        val ctx = context ?: return
+        isDisconnectingVless = true
+        isVlessConnected = false
+        handler.removeCallbacks(connectionTimeoutRunnable)
+        VlessManager.stopVpn(ctx)
+        updateVlessState(false)
+        showProgress(false)
+        updateVlessServerUI()
+
+        // Небольшая пауза, затем подключение к новому серверу без рекламы
+        handler.postDelayed({
+            if (isAdded) {
+                updateVlessServerUI()
+                startVlessVpnInternal()
+            }
+        }, 800)
+    }
+
+    /**
+     * «Автовыбор» включён для текущего протокола — перед новым подключением
+     * берём наименее нагруженный доступный сервер (см. ServerAutoSelect).
+     */
+    private fun applyAutoServerIfEnabled() {
+        if (!isAdded) return
+        val loadMap = viewModel2.serversLoadMap.value ?: emptyMap()
+        val premiumUser = shareViewModel.isPremium
         try {
-            val sheet = com.witvpn.ikev2.presentation.ui.vless.VlessServersBottomSheet()
-            sheet.onServerSelected = { newServer ->
-                // Check if we need to auto-reconnect (already connected or connecting)
-                val wasConnected = isVlessConnected || VyomVpnManager.currentState == VyomState.CONNECTING
-                
-                if (wasConnected) {
-                    val ctx = context
-                    if (ctx != null) {
-                        // Disconnect first
-                        isDisconnectingVless = true
-                        isVlessConnected = false
-                        handler.removeCallbacks(connectionTimeoutRunnable)
-                        VlessManager.stopVpn(ctx)
-                        updateVlessState(false)
-                        showProgress(false)
-                        
-                        // Wait a bit then connect to new server without ads
-                        handler.postDelayed({
-                            if (isAdded) {
-                                updateVlessServerUI()
-                                startVlessVpnInternal() // No ad check - direct connect
-                            }
-                        }, 800)
+            when {
+                isGwMode && ServerAutoSelect.isEnabled(ServersFragment.PROTOCOL_GW) -> {
+                    val candidates = viewModel2.serversGwList.value.orEmpty()
+                        .filter { it.status && it.config != null && (!it.premium || premiumUser) }
+                    val draft = getGwDraft()
+                    val current = candidates.find {
+                        "gw_${it.id}" == draft?.id || (draft?.ipAddress != null && it.ipAddress == draft.ipAddress)
                     }
-                } else {
-                    // Just update UI
+                    val best = ServerAutoSelect.pickBest(
+                        candidates, current,
+                        keyOf = { it.id },
+                        loadOf = { s -> s.ipAddress?.let { loadMap[it] } }
+                    ) ?: return
+                    GwManager.selectedServer = best.config
+                    updateServerButton(Server.fromGw(best))
+                }
+                isAwgMode && ServerAutoSelect.isEnabled(ServersFragment.PROTOCOL_AWG) -> {
+                    val candidates = viewModel2.serversAwgList.value.orEmpty()
+                        .filter { it.status && (!it.premium || premiumUser) }
+                    val currentIp = AmneziaWGManager.selectedServer?.ipAddress ?: getAwgDraft()?.ipAddress
+                    val current = candidates.find { it.ipAddress == currentIp }
+                    val best = ServerAutoSelect.pickBest(
+                        candidates, current,
+                        keyOf = { it.ipAddress },
+                        loadOf = { loadMap[it.ipAddress] }
+                    ) ?: return
+                    AmneziaWGManager.selectedServer = best
+                    updateServerButton(Server.fromAwg(best))
+                }
+                isVlessMode && ServerAutoSelect.isEnabled(ServersFragment.PROTOCOL_VLESS) -> {
+                    val best = ServerAutoSelect.pickBest(
+                        VlessManager.vlessServers, VlessManager.selectedServer,
+                        keyOf = { ServersFragment.vlessKey(it) },
+                        loadOf = { loadMap[it.address] }
+                    ) ?: return
+                    VlessManager.selectedServer = best
                     updateVlessServerUI()
                 }
             }
-            sheet.show(childFragmentManager, "VlessServers")
         } catch (e: Exception) {
-            // Fragment state may be invalid
+            Timber.e(e, "Auto server pick failed")
         }
     }
 
     private fun toggleVlessConnection() {
+        if (!isVlessConnected) applyAutoServerIfEnabled()
         if (VlessManager.selectedServer == null) {
             context?.let { Toast.makeText(it, "No server selected", Toast.LENGTH_SHORT).show() }
             return

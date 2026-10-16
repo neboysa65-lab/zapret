@@ -32,4 +32,15 @@
     <color name="color_load_medium">#FFC107</color>
     <color name="color_load_high">#FF9800</color>
     <color name="color_load_critical">#F44336</color>
+
+    <!-- Server list + update dialog: dark graphite surfaces, brand blue accent -->
+    <color name="srv_section_bg">#171A1F</color>
+    <color name="srv_card_bg">#1B1E24</color>
+    <color name="srv_card_stroke">#262B33</color>
+    <color name="srv_current_bg">#1A2230</color>
+    <color name="srv_selected_bg">#1A2420</color>
+    <color name="srv_selected">#3DCB5B</color>
+    <color name="srv_text_secondary">#8C9197</color>
+    <color name="srv_pro_gold">#FFC93C</color>
+    <color name="srv_load_track">#2A2F38</color>
 </resources>

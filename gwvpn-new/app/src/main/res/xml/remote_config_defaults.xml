@@ -38,4 +38,33 @@
         <key>heartbeat_interval_seconds</key>
         <value>60</value>
     </entry>
+    <!-- Окно «Доступно обновление» (AppUpdatePrompt). Пустое значение = выключено.
+         update_latest_version — актуальная версия (versionName, напр. 3.1.5):
+             если установленная ниже — при запуске показывается окно
+             с кнопками «Обновить» / «Позже».
+         update_min_version — минимально допустимая версия: если установленная
+             ниже — окно без кнопки «Позже» (обязательное обновление).
+         update_url — куда ведёт «Обновить» (открытый текст или gwenc1);
+             пусто = страница приложения в Google Play.
+         update_notes_ru / update_notes_en — необязательный блок «Что нового». -->
+    <entry>
+        <key>update_latest_version</key>
+        <value></value>
+    </entry>
+    <entry>
+        <key>update_min_version</key>
+        <value></value>
+    </entry>
+    <entry>
+        <key>update_url</key>
+        <value></value>
+    </entry>
+    <entry>
+        <key>update_notes_ru</key>
+        <value></value>
+    </entry>
+    <entry>
+        <key>update_notes_en</key>
+        <value></value>
+    </entry>
 </defaultsMap>
