@@ -34,8 +34,8 @@ android {
         applicationId "app.greywebs.vpn"
         minSdk 24
         targetSdk 36
-        versionCode 288
-        versionName "3.1.4"
+        versionCode 292
+        versionName "3.1.7"
 
         archivesBaseName = "GreyWebVPN-$versionName [$versionCode]"
 
