@@ -36,8 +36,8 @@ import com.witvpn.ikev2.presentation.base.BaseActivity
 import com.witvpn.ikev2.presentation.utils.GooglePlayHelper
 import com.witvpn.ikev2.presentation.utils.AppUpdatePrompt
 import com.witvpn.ikev2.presentation.utils.InAppUpdateHelper
+import com.witvpn.ikev2.presentation.utils.PromptAction
 import com.witvpn.ikev2.presentation.utils.RemoteConfigManager
-import com.witvpn.ikev2.presentation.utils.UpdateKind
 import com.witvpn.ikev2.presentation.ui.update.UpdateAvailableDialog
 import com.witvpn.ikev2.presentation.ui.update.UpdatePromptViewModel
 import com.witvpn.ikev2.presentation.utils.PremiumNotificationHelper
@@ -76,6 +76,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), MainDelegate {
 
     private val viewModel: ShareViewModel by viewModels()
     private val updatePromptViewModel: UpdatePromptViewModel by viewModels()
+    private val updateCheckHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val updateCheckRunnable = Runnable { maybeShowUpdatePrompt() }
     private val handleUserResource = Observer<User> {}
 
     @javax.inject.Inject
@@ -143,9 +145,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), MainDelegate {
 
         InAppUpdateHelper.checkAndRequestAppUpdate(this)
 
-        // Окно «Доступно обновление» по версии из Remote Config
-        val activityRef = java.lang.ref.WeakReference(this)
-        RemoteConfigManager.whenReady { activityRef.get()?.maybeShowUpdatePrompt() }
+        // Окно «Доступно обновление»: перепроверяем при каждой активации
+        // Remote Config (первый fetch, real-time пуш, периодический/foreground
+        // re-fetch). LiveData доставит последнее значение и после возврата из фона.
+        RemoteConfigManager.configRevision.observe(this) { scheduleUpdatePromptCheck() }
 
 //        initNavigationDrawer()
 
@@ -198,7 +201,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), MainDelegate {
                 binding.bottomNavigation.visibility = GONE
             }
             if (destination.id == R.id.mainFragment) {
-                binding.root.post { maybeShowUpdatePrompt() }
+                scheduleUpdatePromptCheck()
             }
         }
         binding.bottomNavigation.setOnItemSelectedListener {
@@ -232,34 +235,63 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), MainDelegate {
     }
 
     /**
-     * Показывает окно обновления на главном экране, когда Remote Config готов.
-     * Безопасно вызывать сколько угодно раз: дубликатов не будет, а после
-     * «Позже» окно не появится до следующего запуска.
+     * Проверки только через post: так они не попадают внутрь транзакций
+     * FragmentManager/lifecycle-колбэков, а частые триггеры схлопываются в одну.
+     */
+    private fun scheduleUpdatePromptCheck() {
+        updateCheckHandler.removeCallbacks(updateCheckRunnable)
+        updateCheckHandler.post(updateCheckRunnable)
+    }
+
+    /**
+     * Показывает/обновляет/закрывает окно обновления на главном экране по
+     * актуальному конфигу. Вызывается многократно — решение каждый раз
+     * пересчитывается (AppUpdatePrompt.decide), дубликатов не бывает.
      */
     private fun maybeShowUpdatePrompt() {
-        if (updatePromptViewModel.handled || isFinishing || isDestroyed) return
+        if (isFinishing || isDestroyed) return
         if (!RemoteConfigManager.isInitialFetchFinished()) return
         if (navController.currentDestination?.id != R.id.mainFragment) return
         val fm = supportFragmentManager
-        if (fm.isStateSaved || fm.findFragmentByTag(UpdateAvailableDialog.TAG) != null) return
+        if (fm.isStateSaved) return
         try {
-            val info = AppUpdatePrompt.resolve(this)
-            // Play уже показал свой экран обновления — второй раз не дублируем
-            if (info == null ||
-                (info.kind == UpdateKind.OPTIONAL && InAppUpdateHelper.isPlayUpdateFlowStarted)
-            ) {
-                updatePromptViewModel.handled = true
-                return
+            // Не findFragmentByTag: закрываемое окно с тем же тегом висит до
+            // выполнения транзакции и вернулось бы первым — получился бы дубль.
+            val showing = fm.fragments.filterIsInstance<UpdateAvailableDialog>()
+                .firstOrNull { it.isAdded && !it.isClosing && !it.isRemoving }
+            val action = AppUpdatePrompt.decide(
+                info = AppUpdatePrompt.resolve(this),
+                dismissedTarget = updatePromptViewModel.dismissedTarget,
+                playFlowStarted = InAppUpdateHelper.isPlayUpdateFlowStarted,
+                showing = showing?.shownInfo(),
+            )
+            when (action) {
+                PromptAction.None -> Unit
+                PromptAction.Hide -> showing?.close()
+                is PromptAction.Show -> {
+                    showing?.close()
+                    UpdateAvailableDialog.newInstance(action.info).showNow(fm, UpdateAvailableDialog.TAG)
+                }
             }
-            UpdateAvailableDialog.newInstance(info).show(fm, UpdateAvailableDialog.TAG)
         } catch (e: Exception) {
             Timber.e(e, "Update prompt failed")
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Свежий конфиг при каждом возврате в приложение (процесс VPN живёт днями)
+        RemoteConfigManager.refreshOnForeground(this)
+    }
+
+    override fun onDestroy() {
+        updateCheckHandler.removeCallbacks(updateCheckRunnable)
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
-        maybeShowUpdatePrompt()
+        scheduleUpdatePromptCheck()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val userId = getSessionUserId() ?: return@launch

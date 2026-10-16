@@ -3,6 +3,8 @@ package com.witvpn.ikev2.presentation.utils
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
 import com.google.firebase.ktx.Firebase
 import com.google.firebase.remoteconfig.FirebaseRemoteConfig
 import com.google.firebase.remoteconfig.ktx.remoteConfig
@@ -20,6 +22,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Централизованный источник «живых» доменов приложения.
@@ -141,7 +145,19 @@ object RemoteConfigManager {
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val readyLock = Any()
     private var initialFetchFinished = false // guarded by readyLock
-    private val readyCallbacks = ArrayList<() -> Unit>() // guarded by readyLock
+
+    private val revisionCounter = AtomicLong(0)
+    private val _configRevision = MutableLiveData<Long>()
+
+    /**
+     * Меняется после каждой активации конфига: первый fetch (или его таймаут),
+     * real-time пуш из консоли, периодический и foreground re-fetch. Подписчики
+     * (окно обновления) перечитывают значения — иначе живой процесс VPN-приложения
+     * неделями показывал бы решение, принятое по старому конфигу.
+     */
+    val configRevision: LiveData<Long> = _configRevision
+
+    private val foregroundFetchInFlight = AtomicBoolean(false)
 
     /**
      * Инициализация + первичная загрузка конфига. Вызывать один раз из
@@ -172,6 +188,7 @@ object RemoteConfigManager {
                         Timber.w(task.exception, "RemoteConfig: fetch/activate failed")
                     }
                     markInitialFetchFinished()
+                    if (task.isSuccessful) bumpRevision()
                 }
             mainHandler.postDelayed({ markInitialFetchFinished() }, INITIAL_FETCH_WAIT_MS)
 
@@ -186,6 +203,7 @@ object RemoteConfigManager {
                                 if (task.isSuccessful) {
                                     activeFailoverApiUrl = null
                                     persistRemoteUrls(appContext, rc)
+                                    bumpRevision()
                                 }
                             }
                         }
@@ -208,27 +226,42 @@ object RemoteConfigManager {
     /** Первый fetch завершён (успешно, с ошибкой или по таймауту). */
     fun isInitialFetchFinished(): Boolean = synchronized(readyLock) { initialFetchFinished }
 
-    /**
-     * Выполнить [callback] на main-потоке, когда первый fetch завершится
-     * (или сразу, если уже завершён). Срабатывает один раз.
-     */
-    fun whenReady(callback: () -> Unit) {
-        val runNow = synchronized(readyLock) {
-            if (initialFetchFinished) true else {
-                readyCallbacks += callback
-                false
-            }
-        }
-        if (runNow) mainHandler.post(callback)
-    }
-
     private fun markInitialFetchFinished() {
-        val pending = synchronized(readyLock) {
+        synchronized(readyLock) {
             if (initialFetchFinished) return
             initialFetchFinished = true
-            ArrayList(readyCallbacks).also { readyCallbacks.clear() }
         }
-        pending.forEach { mainHandler.post(it) }
+        bumpRevision()
+    }
+
+    private fun bumpRevision() {
+        _configRevision.postValue(revisionCounter.incrementAndGet())
+    }
+
+    /**
+     * Re-fetch при возврате приложения на экран: страховка, если real-time
+     * канал недоступен (блокировки, сеть). SDK сам соблюдает
+     * minimumFetchInterval — чаще раза в 5 минут в сеть не ходит, троттлинга нет.
+     */
+    fun refreshOnForeground(context: Context) {
+        val rc = remoteConfig ?: return
+        if (!firebaseAvailable || !isInitialFetchFinished()) return
+        if (!foregroundFetchInFlight.compareAndSet(false, true)) return
+        val appContext = context.applicationContext
+        try {
+            rc.fetchAndActivate().addOnCompleteListener { task ->
+                foregroundFetchInFlight.set(false)
+                if (task.isSuccessful) {
+                    persistRemoteUrls(appContext, rc)
+                    bumpRevision()
+                } else {
+                    Timber.w(task.exception, "RemoteConfig: foreground fetch failed")
+                }
+            }
+        } catch (e: Throwable) {
+            foregroundFetchInFlight.set(false)
+            Timber.w(e, "RemoteConfig: foreground fetch failed")
+        }
     }
 
     /** Настройки окна обновления из Remote Config (пустые строки = не задано). */
@@ -270,6 +303,7 @@ object RemoteConfigManager {
                     if (rc != null) {
                         Tasks.await(rc.fetchAndActivate(), 20, TimeUnit.SECONDS)
                         persistRemoteUrls(appContext, rc)
+                        bumpRevision()
                         true
                     } else false
                 } catch (it: Throwable) {

@@ -18,9 +18,10 @@ import com.witvpn.ikev2.presentation.utils.AppUpdatePrompt
 import com.witvpn.ikev2.presentation.utils.UpdateInfo
 import com.witvpn.ikev2.presentation.utils.UpdateKind
 
-/** Живёт, пока жива MainActivity (переживает пересоздание): окно — один раз за запуск. */
+/** Живёт, пока жива MainActivity (переживает пересоздание). */
 class UpdatePromptViewModel : ViewModel() {
-    var handled = false
+    /** Версия, для которой в этом запуске нажали «Позже» (или ушли в магазин). */
+    var dismissedTarget: String? = null
 }
 
 class UpdateAvailableDialog : DialogFragment() {
@@ -46,6 +47,34 @@ class UpdateAvailableDialog : DialogFragment() {
 
     private val promptViewModel: UpdatePromptViewModel by activityViewModels()
     private var binding: DialogUpdateAvailableBinding? = null
+
+    /** Окно уже закрывается — проверка не должна считать его показанным. */
+    var isClosing = false
+        private set
+
+    /** Что показывает окно — для сравнения со свежим конфигом. */
+    fun shownInfo(): UpdateInfo? {
+        val args = arguments ?: return null
+        val kind = runCatching { UpdateKind.valueOf(args.getString(ARG_KIND).orEmpty()) }.getOrNull()
+            ?: return null
+        return UpdateInfo(
+            kind = kind,
+            installedVersion = args.getString(ARG_INSTALLED).orEmpty(),
+            targetVersion = args.getString(ARG_TARGET).orEmpty(),
+            updateUrl = args.getString(ARG_URL).orEmpty(),
+            notes = args.getString(ARG_NOTES).orEmpty(),
+        )
+    }
+
+    private fun rememberDismissed() {
+        promptViewModel.dismissedTarget = arguments?.getString(ARG_TARGET)
+    }
+
+    /** Закрыть без отметки «Позже» (конфиг изменился). */
+    fun close() {
+        isClosing = true
+        dismissAllowingStateLoss()
+    }
 
     private val required: Boolean
         get() = arguments?.getString(ARG_KIND) == UpdateKind.REQUIRED.name
@@ -82,8 +111,8 @@ class UpdateAvailableDialog : DialogFragment() {
 
         b.btnLater.visibility = if (required) View.GONE else View.VISIBLE
         b.btnLater.setOnClickListener {
-            promptViewModel.handled = true
-            dismissAllowingStateLoss()
+            rememberDismissed()
+            close()
         }
         b.btnUpdate.setOnClickListener {
             val ctx = context ?: return@setOnClickListener
@@ -93,8 +122,8 @@ class UpdateAvailableDialog : DialogFragment() {
             }
             // Обязательное обновление не закрываем: вернулся без обновления — окно на месте
             if (!required) {
-                promptViewModel.handled = true
-                dismissAllowingStateLoss()
+                rememberDismissed()
+                close()
             }
         }
         return b.root
@@ -107,7 +136,12 @@ class UpdateAvailableDialog : DialogFragment() {
 
     override fun onCancel(dialog: DialogInterface) {
         super.onCancel(dialog)
-        promptViewModel.handled = true
+        rememberDismissed()
+    }
+
+    override fun onDismiss(dialog: DialogInterface) {
+        isClosing = true
+        super.onDismiss(dialog)
     }
 
     override fun onDestroyView() {

@@ -44,4 +44,48 @@ class AppUpdatePromptTest {
         assertEquals(UpdateKind.REQUIRED, AppUpdatePrompt.evaluate("3.1.4", "", "3.2"))
         assertEquals(UpdateKind.OPTIONAL, AppUpdatePrompt.evaluate("3.1.5", "3.2.0", "3.1.5"))
     }
+    private fun info(kind: UpdateKind, target: String, notes: String = "") =
+        UpdateInfo(kind, "3.1.6", target, "", notes)
+
+    @Test
+    fun `config that arrives after a no-update check still shows the prompt`() {
+        // Регрессия: первая проверка по старому конфигу больше не «закрывает» окно навсегда
+        assertEquals(PromptAction.None, AppUpdatePrompt.decide(null, null, false, null))
+        val fresh = info(UpdateKind.REQUIRED, "3.1.7")
+        assertEquals(PromptAction.Show(fresh), AppUpdatePrompt.decide(fresh, null, false, null))
+    }
+
+    @Test
+    fun `later hides only the dismissed optional version`() {
+        val v317 = info(UpdateKind.OPTIONAL, "3.1.7")
+        assertEquals(PromptAction.None, AppUpdatePrompt.decide(v317, "3.1.7", false, null))
+        val v318 = info(UpdateKind.OPTIONAL, "3.1.8")
+        assertEquals(PromptAction.Show(v318), AppUpdatePrompt.decide(v318, "3.1.7", false, null))
+    }
+
+    @Test
+    fun `required ignores later and play flow`() {
+        val required = info(UpdateKind.REQUIRED, "3.1.7")
+        assertEquals(PromptAction.Show(required), AppUpdatePrompt.decide(required, "3.1.7", true, null))
+    }
+
+    @Test
+    fun `play update flow suppresses only the optional prompt`() {
+        val optional = info(UpdateKind.OPTIONAL, "3.1.7")
+        assertEquals(PromptAction.None, AppUpdatePrompt.decide(optional, null, true, null))
+    }
+
+    @Test
+    fun `shown prompt is kept, replaced or hidden as the config changes`() {
+        val optional = info(UpdateKind.OPTIONAL, "3.1.7")
+        assertEquals(PromptAction.None, AppUpdatePrompt.decide(optional, null, false, optional))
+
+        val required = info(UpdateKind.REQUIRED, "3.1.7")
+        assertEquals(PromptAction.Show(required), AppUpdatePrompt.decide(required, null, false, optional))
+
+        val newNotes = info(UpdateKind.OPTIONAL, "3.1.7", notes = "fixes")
+        assertEquals(PromptAction.Show(newNotes), AppUpdatePrompt.decide(newNotes, null, false, optional))
+
+        assertEquals(PromptAction.Hide, AppUpdatePrompt.decide(null, null, false, required))
+    }
 }

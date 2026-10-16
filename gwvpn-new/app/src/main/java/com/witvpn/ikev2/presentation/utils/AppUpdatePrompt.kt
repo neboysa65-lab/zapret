@@ -43,6 +43,15 @@ data class UpdateInfo(
     val notes: String,
 )
 
+sealed class PromptAction {
+    /** Ничего не менять. */
+    object None : PromptAction()
+    /** Закрыть показанное окно: обновление больше не нужно. */
+    object Hide : PromptAction()
+    /** Показать окно (заменив текущее, если оно другое). */
+    data class Show(val info: UpdateInfo) : PromptAction()
+}
+
 object AppUpdatePrompt {
 
     /**
@@ -57,6 +66,31 @@ object AppUpdatePrompt {
             return UpdateKind.OPTIONAL
         }
         return UpdateKind.NONE
+    }
+
+    /**
+     * Что сделать с окном при очередной проверке (каждая активация конфига,
+     * возврат на экран). Без состояния «уже проверяли»: решение всегда
+     * пересчитывается по свежему конфигу.
+     *
+     * [dismissedTarget] — версия, для которой в этом запуске нажали «Позже»;
+     * она глушит только необязательное окно и только для этой же версии.
+     * [showing] — что сейчас на экране (null — окна нет).
+     */
+    fun decide(
+        info: UpdateInfo?,
+        dismissedTarget: String?,
+        playFlowStarted: Boolean,
+        showing: UpdateInfo?,
+    ): PromptAction {
+        val wanted = info?.takeUnless {
+            it.kind == UpdateKind.OPTIONAL && (playFlowStarted || it.targetVersion == dismissedTarget)
+        }
+        return when {
+            wanted == showing -> PromptAction.None
+            wanted == null -> PromptAction.Hide
+            else -> PromptAction.Show(wanted)
+        }
     }
 
     /** Данные для окна или null, если обновлять не нужно. */
